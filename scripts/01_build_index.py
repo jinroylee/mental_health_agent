@@ -1,52 +1,65 @@
-import os, json, glob
+#!/usr/bin/env python
+"""
+Embeds all files in data_raw/ and builds a Pinecone (or Chroma) index.
+Run once after you add or change documents.
+"""
+
+import os, glob, dotenv, sys
+from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredFileLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from langchain.vectorstores import Pinecone as PineconeStore
-import pinecone, dotenv
+from pinecone import Pinecone, ServerlessSpec
+from langchain_pinecone import PineconeVectorStore
+import time
 
-dotenv.load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+dotenv.load_dotenv(PROJECT_ROOT / ".env")
 
-file = glob.glob("data_raw/data.pdf")
+DATA_DIR   = PROJECT_ROOT / "data_raw"
+CHUNK_DIR  = PROJECT_ROOT / "data_chunks"     # optional cache
+CHUNK_SIZE, OVERLAP = 800, 200
+INDEX_NAME = os.environ.get("INDEX_NAME")
 
-loader = PyPDFLoader if file.endswith(".pdf") else UnstructuredFileLoader
-docs = sum((loader(fp).load() for fp in glob.glob("data_raw/*")), [])
+def load_documents():
+    docs = []
+    for fp in glob.glob(str(DATA_DIR / "*")):
+        if fp.lower().endswith(".pdf"):
+            docs += PyPDFLoader(fp).load()
+        else:
+            docs += UnstructuredFileLoader(fp).load()
+    print(f"Loaded {len(docs)} raw docs")
+    return docs
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
-chunks = splitter.split_documents(docs)
+def main():
+    print("Splitting & embedding ...")
+    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE,
+                                              chunk_overlap=OVERLAP)
+    chunks   = splitter.split_documents(load_documents())
+    print(f"Produced {len(chunks)} chunks")
 
-emb = OpenAIEmbeddings(model="text-embedding-ada-002")
-pinecone.init(api_key=os.environ["PINECONE_API_KEY"], environment="gcp-starter")
-index = pinecone.Index("mh-agent", dimension=1536)      # or create if not exists
-store = PineconeStore.from_documents(chunks, emb, index_name="mh-agent")  
+    embed = OpenAIEmbeddings(model="text-embedding-ada-002")
 
-from langchain_openai import ChatOpenAI
-from langchain.memory import ConversationBufferMemory
-from langchain.chains.moderation import OpenAIModerationChain   # safety
-from langchain import create_retrieval_chain                    # new LCEL helper
-from langchain.prompts import ChatPromptTemplate
+    pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 
-moderation = OpenAIModerationChain()                            # passes/blocks input :contentReference[oaicite:2]{index=2}
-retriever = store.as_retriever(search_kwargs=dict(k=4))
+    existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
+    print(existing_indexes)
+    if INDEX_NAME not in existing_indexes:
+        pc.create_index(
+            name=INDEX_NAME,
+            dimension=1536,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            deletion_protection="enabled",  # Defaults to "disabled"
+        )
+        while not pc.describe_index(INDEX_NAME).status["ready"]:
+            time.sleep(1)
 
-SYSTEM_PROMPT = """You are a supportive mental-health assistant. 
-Use the retrieved information to answer with empathy.
-If user asks for medical diagnosis or self-harm instructions, 
-politely refuse and suggest professional help."""
+    index = pc.Index(INDEX_NAME)
+    vector_store = PineconeVectorStore(index=index, embedding=embed)
+    vector_store.add_documents(chunks)
+    
+    print(vector_store.similarity_search("What is the capital of France?", k=2))
 
-prompt = ChatPromptTemplate.from_messages(
-    [("system", SYSTEM_PROMPT),
-     ("context", "{context}"),
-     ("user", "{input}")]
-)
-
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
-
-rag_chain = create_retrieval_chain(llm, retriever, prompt=prompt)   :contentReference[oaicite:3]{index=3}
-memory = ConversationBufferMemory(return_messages=True)
-
-def agent(user_input: str):
-    moderation.check(user_input)        # raises if flagged
-    result = rag_chain.invoke({"input": user_input}, memory=memory)
-    return result["answer"]
-
+if __name__ == "__main__":
+    sys.exit(main())

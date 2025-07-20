@@ -10,9 +10,12 @@ dependencies = [
     "langchain>=0.3.26",
     "langchain-community>=0.3.27",
     "langchain-openai>=0.3.27",
+    "langchain-pinecone>=0.2.9",
     "langgraph>=0.5.1",
+    "mlflow>=3.1.1",
     "openai>=1.93.1",
     "pinecone>=7.3.0",
+    "pypdf>=5.8.0",
     "python-dotenv>=1.1.1",
 ]
 
