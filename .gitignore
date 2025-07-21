@@ -3,3 +3,6 @@
 __pycache__/
 uv.lock
 mlruns/
+data_raw/
+data_chunks/
+.DS_Store

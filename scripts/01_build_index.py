@@ -5,6 +5,7 @@ Run once after you add or change documents.
 """
 
 import os, glob, dotenv, sys
+import json
 from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredFileLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -31,12 +32,34 @@ def load_documents():
     print(f"Loaded {len(docs)} raw docs")
     return docs
 
+def save_chunks(chunks):
+    """Save chunks to data_chunks directory as JSON files."""
+    CHUNK_DIR.mkdir(exist_ok=True)
+    
+    # Clear existing chunk files
+    for existing_file in CHUNK_DIR.glob("chunk_*.json"):
+        existing_file.unlink()
+    
+    for i, chunk in enumerate(chunks):
+        chunk_data = {
+            "content": chunk.page_content,
+            "metadata": chunk.metadata
+        }
+        
+        chunk_file = CHUNK_DIR / f"chunk_{i:04d}.json"
+        with open(chunk_file, "w", encoding="utf-8") as f:
+            json.dump(chunk_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"Saved {len(chunks)} chunks to {CHUNK_DIR}")
+
 def main():
     print("Splitting & embedding ...")
-    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE,
-                                              chunk_overlap=OVERLAP)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=OVERLAP)
     chunks   = splitter.split_documents(load_documents())
     print(f"Produced {len(chunks)} chunks")
+
+    # Save chunks to data_chunks directory
+    save_chunks(chunks)
 
     embed = OpenAIEmbeddings(model="text-embedding-ada-002")
 
