@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Literal, TypedDict
 
 import dotenv
+from openai import OpenAI
 from langchain.chains.moderation import OpenAIModerationChain
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -31,6 +32,11 @@ dotenv.load_dotenv(PROJECT_ROOT / ".env")
 PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
 INDEX_NAME = os.environ["INDEX_NAME"]
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+openai_client = OpenAI(
+    # This is the default and can be omitted
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
 
 _llm = ChatOpenAI(model_name=OPENAI_MODEL, temperature=0.3)
 _embed = OpenAIEmbeddings(model="text-embedding-ada-002")
@@ -102,10 +108,10 @@ def classify_emotion_and_risk(message: str) -> tuple[str, str]:
     print("@@@ classify_emotion_and_risk @@@")
     print(message)
     # 1. Self‑harm check via moderation
-    moderation_res = moderation_chain.run(message)
+    moderation_res = openai_client.moderations.create(model="text-moderation-latest", input=message).model_dump()
     print("@@@ moderation_res @@@")
     print(moderation_res)
-    if moderation_res.get("self_harm"):
+    if moderation_res["categories"]["self_harm"]:
         logger.info("Moderation flagged self‑harm. Escalating to crisis path.")
         return "stressed", "crisis"
 
