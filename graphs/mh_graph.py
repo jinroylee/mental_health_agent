@@ -82,7 +82,7 @@ class ChatState(TypedDict, total=False):
         "stressed",
     ]
     risk_level: Literal["safe", "crisis"]
-    detected_distortion: str  # e.g. "catastrophizing" or ""
+    detected_distortion: str | None  # e.g. "catastrophizing" or ""
     skill_script: str  # selected coping skill instructions
     prior_summary: str  # summary retrieved at session start
 
@@ -105,13 +105,15 @@ def classify_emotion_and_risk(message: str) -> tuple[str, str]:
 
     Returns (mood, risk_level)
     """
-    print("@@@ classify_emotion_and_risk @@@")
-    print(message)
     # 1. Self‑harm check via moderation
-    moderation_res = openai_client.moderations.create(model="text-moderation-latest", input=message).model_dump()
-    print("@@@ moderation_res @@@")
-    print(moderation_res)
-    if moderation_res["categories"]["self_harm"]:
+    moderation_res = openai_client.moderations.create(model="text-moderation-latest", input=message).model_dump()["results"][0]
+
+    print("=============================================classify_emotion_and_risk ============================================================")
+    print(message)
+    print("Self-harm: ", moderation_res["categories"]["self_harm"])
+    print("Self-harm intent: ", moderation_res["categories"]["self_harm_intent"])
+
+    if moderation_res["categories"]["self_harm"] and moderation_res["categories"]["self_harm_intent"]:
         logger.info("Moderation flagged self‑harm. Escalating to crisis path.")
         return "stressed", "crisis"
 
@@ -123,6 +125,10 @@ def classify_emotion_and_risk(message: str) -> tuple[str, str]:
         f"{message}\nEmotion:"
     )
     mood = _llm.invoke(prompt).content.strip().lower()
+
+    print("mood: ", mood)
+    print("=============================================classify_emotion_and_risk ============================================================")
+
     if mood not in {"neutral", "anxious", "sad", "angry", "happy", "stressed"}:
         mood = "neutral"
     return mood, "safe"
@@ -168,6 +174,11 @@ def retrieve_reframe_template(distortion_label: str) -> str:
 def detect_emotion_node(state: ChatState) -> ChatState:
     user_msg = state["last_user_msg"]
     mood, risk_level = classify_emotion_and_risk(user_msg)
+    print("=============================================detect_emotion_node ============================================================")
+    print("user_msg: ", user_msg)
+    print("mood: ", mood)
+    print("risk_level: ", risk_level)
+    print("=============================================detect_emotion_node ============================================================")
     return {"mood": mood, "risk_level": risk_level}
 
 
@@ -184,17 +195,23 @@ def crisis_path_node(state: ChatState) -> ChatState:
 
 def session_initializer_node(state: ChatState) -> ChatState:
     """Runs at the start of every session to pull latest summary."""
+    print("=============================================session_initializer_node ============================================================")
+    print("user_id: ", state["user_id"])
     user_id = state["user_id"]
     docs = retriever.vectorstore.similarity_search(
         query="latest session summary",
         k=1,
         filter={"user_id": user_id, "doc_type": "session_summary"},
     )
+    print("docs: ", docs)
     summary = docs[0].page_content if docs else ""
+    print("summary: ", summary)
     if summary:
         state["chat_history"].append(
             AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
         )
+    print("prior_summary: ", summary)
+    print("=============================================session_initializer_node ============================================================")
     return {"prior_summary": summary}
 
 
@@ -203,21 +220,38 @@ def nlp_parse_node(state: ChatState) -> ChatState:  # placeholder
 
     For this skeleton we simply pass through.
     """
+    print("=============================================nlp_parse_node ============================================================")
+    print("state: ", state)
+    print("=============================================nlp_parse_node ============================================================")
     return {}
 
 
 def distortion_detector_node(state: ChatState) -> ChatState:
-    prompt = (
+    print("=============================================distortion_detector_node ============================================================")
+    print("last_user_msg: ", state["last_user_msg"])
+    messages = [
+    (
+        "system",
         "Detect if the user's message contains a cognitive distortion. "
-        "If so, respond with the label (e.g., catastrophizing, black‑and‑white, mind‑reading, should‑statement). "
-        "If none, return 'none'.\n\nUser message:" f" {state['last_user_msg']}\nLabel:"
-    )
-    label = _llm.invoke(prompt).content.strip().lower()
-    label = "" if label == "none" else label
+        "If so, respond with the label (e.g., catastrophizing, black-and-white, mind-reading, should-statement). "
+        "If none, return 'none'.User message:",
+    ),
+    ("human", state['last_user_msg']),
+    ]
+
+    print("messages: ", messages)
+    print("_llm.invoke(messages): ", _llm.invoke(messages))
+    print("llm response: ", _llm.invoke(messages).content)
+
+    label = _llm.invoke(messages).content.strip().lower()
+    print("label: ", label)
+    label = None if label == "none" else label
+    print("=============================================distortion_detector_node ============================================================")
     return {"detected_distortion": label}
 
 
 def reframe_prompt_node(state: ChatState) -> ChatState:
+    print("=============================================reframe_prompt_node ============================================================")
     template = retrieve_reframe_template(state["detected_distortion"])
     reply = _llm.invoke(
         f"User said: {state['last_user_msg']}\n"
@@ -229,6 +263,7 @@ def reframe_prompt_node(state: ChatState) -> ChatState:
 
 
 def skill_planner_node(state: ChatState) -> ChatState:
+    print("=============================================skill_planner_node ============================================================")
     query = f"{state['mood']} coping skill short"
     script = retrieve_skill_script(query)
     return {"skill_script": script}
@@ -330,9 +365,10 @@ def build_graph() -> StateGraph[ChatState]:
     # Crisis routing
     sg.add_conditional_edges(
         "detect_emotion",
+        is_crisis,
         {
-            "crisis_path": is_crisis,
-            "session_initializer": lambda _s: True,
+            True: "crisis_path",
+            False: "session_initializer",
         },
     )
 
@@ -344,9 +380,10 @@ def build_graph() -> StateGraph[ChatState]:
 
     sg.add_conditional_edges(
         "distortion_detector",
+         has_distortion,
         {
-            "reframe_prompt": has_distortion,
-            "skill_planner": lambda _s: True,
+            False: "skill_planner",
+            True: "reframe_prompt",
         },
     )
 
