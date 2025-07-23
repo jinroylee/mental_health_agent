@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 from pathlib import Path
-from typing import List, Literal, TypedDict
+from typing import List, Literal, Optional, TypedDict
 
 import dotenv
-from openai import OpenAI
 from langchain.chains.moderation import OpenAIModerationChain
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import END, START, StateGraph
-from langchain.schema import AIMessage, BaseMessage
-# from langchain_community.vectorstores import Pinecone as PineconeStore
+from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 
@@ -38,7 +39,7 @@ openai_client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
 )
 
-_llm = ChatOpenAI(model_name=OPENAI_MODEL, temperature=0.3)
+llm = ChatOpenAI(model_name=OPENAI_MODEL, temperature=0.3)
 _embed = OpenAIEmbeddings(model="text-embedding-ada-002")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -51,7 +52,9 @@ moderation_chain = OpenAIModerationChain()
 conversation_memory = ConversationBufferMemory(return_messages=True)
 
 CRISIS_RESOURCE_FALLBACK = (
-    "If you believe you may harm yourself or others, please reach out for immediate help. In the U.S. call 988 or visit https://988lifeline.org. If you are outside the U.S., search online for a local crisis helpline in your country. You are not alone and help is available."  # noqa: E501
+    "If you believe you may harm yourself or others, please reach out for immediate help. "
+    "In the U.S. call 988 or visit https://988lifeline.org. If you are outside the U.S., "
+    "search online for a local crisis helpline in your country. You are not alone and help is available."
 )
 
 SYSTEM_PROMPT = (
@@ -61,78 +64,51 @@ SYSTEM_PROMPT = (
     "provide crisis resources and encourage professional help."
 )
 
+Mood = Literal["happy", "sad", "anxious", "angry", "neutral", "stressed"]
+Diagnosis = Literal["depression", "anxiety", "none"]
+RiskLevel = Literal["safe", "crisis"]
+
 # ---------------------------------------------------------------------------
 # State definition
 # ---------------------------------------------------------------------------
 class ChatState(TypedDict, total=False):
-    """TypedDict that defines the mutable state carried through the graph."""
+    """Mutable state that flows through the LangGraph."""
 
-    # Session‑static keys (set at START)
+    # Static / session‑level
     user_id: str
     user_locale: str
 
-    # Per‑turn keys
-    last_user_msg: str
-    mood: Literal[
-        "neutral",
-        "anxious",
-        "sad",
-        "angry",
-        "happy",
-        "stressed",
-    ]
-    risk_level: Literal["safe", "crisis"]
-    detected_distortion: str | None  # e.g. "catastrophizing" or ""
-    skill_script: str  # selected coping skill instructions
-    prior_summary: str  # summary retrieved at session start
-
-    # Growing artifacts
+    # Rolling conversation buffer
     chat_history: List[BaseMessage]
 
-    # Flag to terminate session
-    end_session: bool
+    # Safety / affect
+    mood: Mood
+    risk_level: Literal["safe", "crisis"]
+
+    # Diagnosis + routing
+    diagnosis: Diagnosis
+    needs_skill: bool  # branch flag for skill vs. knowledge
+
+    # Cognitive distortion
+    detected_distortion: Optional[str]
+
+    # Skill loop
+    skill_script: Optional[str]
+    skill_attempts: int
+    feedback_sentiment: Optional[str]
+
+    # Summaries
+    prior_summary: Optional[str]
+
+    # Last user message (set each turn)
+    last_user_msg: str
 
 
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
-
-def classify_emotion_and_risk(message: str) -> tuple[str, str]:
-    """Very lightweight emotion + risk classifier.
-
-    * Leverages OpenAI moderation for self‑harm detection.
-    * Uses an LLM zero‑shot call for coarse emotion tagging.
-
-    Returns (mood, risk_level)
-    """
-    # 1. Self‑harm check via moderation
-    moderation_res = openai_client.moderations.create(model="text-moderation-latest", input=message).model_dump()["results"][0]
-
-    print("=============================================classify_emotion_and_risk ============================================================")
-    print(message)
-    print("Self-harm: ", moderation_res["categories"]["self_harm"])
-    print("Self-harm intent: ", moderation_res["categories"]["self_harm_intent"])
-
-    if moderation_res["categories"]["self_harm"] and moderation_res["categories"]["self_harm_intent"]:
-        logger.info("Moderation flagged self‑harm. Escalating to crisis path.")
-        return "stressed", "crisis"
-
-    # 2. Simple LLM emotion classification (could be replaced by fine‑tuned model)
-    prompt = (
-        "Classify the dominant emotion in the following user message "
-        "into one of [neutral, anxious, sad, angry, happy, stressed]. "
-        "Just return the single word.\n\nUser: "
-        f"{message}\nEmotion:"
-    )
-    mood = _llm.invoke(prompt).content.strip().lower()
-
-    print("mood: ", mood)
-    print("=============================================classify_emotion_and_risk ============================================================")
-
-    if mood not in {"neutral", "anxious", "sad", "angry", "happy", "stressed"}:
-        mood = "neutral"
-    return mood, "safe"
-
+def _similarity_search(query: str, *, filters: Optional[dict] = None, k: int = 3):
+    return retriever.vectorstore.similarity_search(query=query, k=k, filter=filters or {})
 
 def retrieve_crisis_resource(locale: str) -> str:
     """Retrieve locale‑specific crisis hotline from the vector store."""
@@ -145,6 +121,13 @@ def retrieve_crisis_resource(locale: str) -> str:
         logger.warning("Failed to retrieve crisis resource: %s", exc)
         return CRISIS_RESOURCE_FALLBACK
 
+def retrieve_reframe_template(distortion_label: str) -> str:
+    docs = _similarity_search(
+        query=f"Socratic questions for {distortion_label}",
+        filters={"doc_type": "reframe_template", "distortion_label": distortion_label},
+        k=1,
+    )
+    return docs[0].page_content if docs else "Could there be another perspective on this?"
 
 def retrieve_skill_script(query: str) -> str:
     """Retrieve a coping skill script matching query (mood/goal)."""
@@ -154,16 +137,6 @@ def retrieve_skill_script(query: str) -> str:
         filter={"doc_type": "skill_script"},
     )
     return docs[0].page_content if docs else "Let's practice slow, deep breathing together."  # fallback
-
-
-def retrieve_reframe_template(distortion_label: str) -> str:
-    """Retrieve Socratic questions / examples for the given cognitive distortion."""
-    docs = retriever.vectorstore.similarity_search(
-        query=f"Socratic questions for {distortion_label}",
-        k=1,
-        filter={"doc_type": "reframe_template"},
-    )
-    return docs[0].page_content if docs else "Could there be another way to interpret this situation?"
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +187,46 @@ def session_initializer_node(state: ChatState) -> ChatState:
     print("=============================================session_initializer_node ============================================================")
     return {"prior_summary": summary}
 
+def diagnose_node(state: ChatState) -> ChatState:
+    user_msg = state["last_user_msg"]
+    diag_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """
+            You are a triage assistant. Analyse the user's latest message **and** prior summary if available.
+            1. Decide if the user is asking for coping skills (`needs_skill=true`) or merely wants to discuss / learn.
+            2. If skills are needed, guess the main condition: depression, anxiety, none.
+            Return ONLY valid JSON: {\"needs_skill\": bool, \"diagnosis\": \"depression|anxiety|none\"}
+            """,
+        ),
+        MessagesPlaceholder("history"),
+        ("user", "{input}"),
+    ])
+    raw = llm.invoke(diag_prompt.format(history=state.get("chat_history", []), input=user_msg)).content
+    try:
+        data = json.loads(raw)
+        needs_skill = bool(data.get("needs_skill", False))
+        diagnosis: Diagnosis = data.get("diagnosis", "none")  # type: ignore[assignment]
+    except json.JSONDecodeError:
+        logger.warning("Diagnose JSON parse error: %s", raw)
+        needs_skill, diagnosis = False, "none"
+
+    state.update(needs_skill=needs_skill, diagnosis=diagnosis)  # type: ignore[arg-type]
+    return state
+
+
+def knowledge_dialogue_node(state: ChatState) -> ChatState:
+    query = state["last_user_msg"]
+    docs = _similarity_search(query, filters={"doc_type": "psycho_education", "locale": "en"}, k=4)
+    context = "\n\n".join(d.page_content for d in docs)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT + "\nYou are having an exploratory conversation; teach in clear, non‑clinical language."),
+        ("system", "Context:\n{ctx}"),
+        ("user", "{question}"),
+    ])
+    answer = llm.invoke(prompt.format(ctx=context, question=query)).content
+    state.setdefault("chat_history", []).append(AIMessage(content=answer))
+    return state
 
 def nlp_parse_node(state: ChatState) -> ChatState:  # placeholder
     """In a production system you would use spaCy / Transformers here.
@@ -240,26 +253,26 @@ def distortion_detector_node(state: ChatState) -> ChatState:
     ]
 
     print("messages: ", messages)
-    print("_llm.invoke(messages): ", _llm.invoke(messages))
-    print("llm response: ", _llm.invoke(messages).content)
+    print("llm.invoke(messages): ", llm.invoke(messages))
+    print("llm response: ", llm.invoke(messages).content)
 
-    label = _llm.invoke(messages).content.strip().lower()
+    label = llm.invoke(messages).content.strip().lower()
     print("label: ", label)
     label = None if label == "none" else label
     print("=============================================distortion_detector_node ============================================================")
     return {"detected_distortion": label}
 
-
 def reframe_prompt_node(state: ChatState) -> ChatState:
-    print("=============================================reframe_prompt_node ============================================================")
-    template = retrieve_reframe_template(state["detected_distortion"])
-    reply = _llm.invoke(
-        f"User said: {state['last_user_msg']}\n"
-        f"Cognitive distortion: {state['detected_distortion']}\n"
-        f"Use the following Socratic template to coach the user to re‑frame: {template}"
-    ).content
-    state["chat_history"].append(AIMessage(content=reply))
-    return {}
+    distortion = state["detected_distortion"]
+    template = retrieve_reframe_template(distortion) if distortion else ""
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("system", "Template:\n{tmpl}"),
+        ("user", "User said: {u}\nPlease respond with Socratic coaching."),
+    ])
+    reply = llm.invoke(prompt.format(tmpl=template, u=state["last_user_msg"])).content
+    state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    return state
 
 
 def skill_planner_node(state: ChatState) -> ChatState:
@@ -269,44 +282,65 @@ def skill_planner_node(state: ChatState) -> ChatState:
     return {"skill_script": script}
 
 
-def guide_exercise_node(state: ChatState) -> ChatState:
-    script = state["skill_script"]
-    reply = (
-        "Let's try this together. " + script + "\nWhen you're ready, let me know how that felt."  # noqa: E501
+def skill_planner_node(state: ChatState) -> ChatState:
+    diagnosis: Diagnosis = state.get("diagnosis", "none")
+    filters = {"doc_type": "skill_script"}
+    if diagnosis != "none":
+        filters["skill_diagnosis"] = diagnosis
+    docs = _similarity_search(
+        query=f"coping skill script for {diagnosis}" if diagnosis != "none" else "general coping skill script",
+        filters=filters,
+        k=3,
     )
-    state["chat_history"].append(AIMessage(content=reply))
-    return {}
+    script = "\n\n".join(d.page_content for d in docs) or "Let's do a simple grounding exercise: notice 5 things you can see…"
+    state.update(skill_script=script, skill_attempts=0)  # type: ignore[arg-type]
+    return state
 
+
+def guide_exercise_node(state: ChatState) -> ChatState:
+    script = state.get("skill_script", "Let's begin a breathing exercise…")
+    intro = script.split("\n")[0]
+    reply = f"Let's try this together. {intro}\nWhen you're ready, let me know how that felt."
+    state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    state["skill_attempts"] = state.get("skill_attempts", 0) + 1  # type: ignore[index]
+    return state
+
+# 11) Collect feedback --------------------------------------------------------
 
 def collect_feedback_node(state: ChatState) -> ChatState:
-    """Waits for user feedback. In this skeleton we treat the next user
-    message as feedback and store sentiment (placeholder logic)."""
     user_msg = state["last_user_msg"]
-    sentiment_prompt = (
-        "Classify the sentiment of the following feedback as positive, neutral, or negative.\n" f"Feedback: {user_msg}\nSentiment:"
-    )
-    sentiment = _llm.invoke(sentiment_prompt).content.strip().lower()
-    return {"feedback_sentiment": sentiment}
+    sentiment_prompt = ChatPromptTemplate.from_messages([
+        ("system", "Classify the sentiment of the feedback as positive, neutral, or negative."),
+        ("user", "{f}"),
+    ])
+    sentiment_raw = llm.invoke(sentiment_prompt.format(f=user_msg)).content.strip().lower()
+    sentiment = sentiment_raw if sentiment_raw in {"positive", "neutral", "negative"} else "neutral"
+    state.update(feedback_sentiment=sentiment)  # type: ignore[arg-type]
+    return state
 
 
 def adjust_instruction_node(state: ChatState) -> ChatState:
     sentiment = state.get("feedback_sentiment", "neutral")
     if sentiment == "negative":
         reply = (
-            "Thanks for letting me know. Let's try an alternative approach—perhaps a grounding exercise using your senses. "
+            "Thanks for letting me know. Let's try an alternative approach—perhaps a sensory grounding exercise. "
             "Focus on naming 5 things you can see, 4 you can touch, 3 you can hear, 2 you can smell, and 1 you can taste."
         )
     else:
-        reply = "Great job! We'll keep practicing this skill as it seems helpful."
-    state["chat_history"].append(AIMessage(content=reply))
-    return {}
+        reply = "Great job! We'll keep practicing this skill since it seems helpful."
+    state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    return state
 
 
 def summary_writer_node(state: ChatState) -> ChatState:
-    summary = _llm.invoke(
-        "Summarise the key points and progress of the following conversation in 3 sentences:\n" + "\n".join(m.content for m in state["chat_history"])  # type: ignore[arg-type]
-    ).content
+    convo = "\n".join(m.content for m in state.get("chat_history", []))
 
+    summary = llm.invoke(
+        ChatPromptTemplate.from_messages([
+            ("system", "Summarise the key points and progress of the following conversation in 3 sentences."),
+            ("system", "{conv}"),
+        ]).format(conv=convo)
+    ).content
     # Persist into vector DB
     retriever.vectorstore.add_documents(
         [
@@ -338,6 +372,9 @@ def has_distortion(state: ChatState) -> bool:
 def needs_adjust(state: ChatState) -> bool:
     return state.get("feedback_sentiment") == "negative"
 
+def needs_skill_script(state: ChatState) -> bool:
+    return state.get("needs_skill")
+
 
 # ---------------------------------------------------------------------------
 # Graph builder
@@ -350,6 +387,8 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_node("detect_emotion", detect_emotion_node)
     sg.add_node("crisis_path", crisis_path_node)
     sg.add_node("session_initializer", session_initializer_node)
+    sg.add_node("diagnose", diagnose_node)
+    sg.add_node("knowledge_dialogue", knowledge_dialogue_node)
     sg.add_node("nlp_parse", nlp_parse_node)
     sg.add_node("distortion_detector", distortion_detector_node)
     sg.add_node("reframe_prompt", reframe_prompt_node)
@@ -375,7 +414,17 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_edge("crisis_path", END)
 
     # Main flow
-    sg.add_edge("session_initializer", "nlp_parse")
+    sg.add_edge("session_initializer", "diagnose")
+
+    sg.add_conditional_edges(
+        "diagnose",
+        needs_skill_script,
+        {
+            True: "nlp_parse",
+            False: "knowledge_dialogue",
+        },
+    )
+
     sg.add_edge("nlp_parse", "distortion_detector")
 
     sg.add_conditional_edges(
@@ -393,9 +442,10 @@ def build_graph() -> StateGraph[ChatState]:
 
     sg.add_conditional_edges(
         "collect_feedback",
+        needs_adjust,
         {
-            "adjust_instruction": needs_adjust,
-            "summary_writer": lambda _s: True,
+            True : "adjust_instruction",
+            False : "summary_writer",
         },
     )
 
