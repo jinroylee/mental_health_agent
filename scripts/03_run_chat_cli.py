@@ -1,14 +1,13 @@
 """
 Simple terminal loop for quick ad-hoc tests.
 """
-
 import sys
 from pathlib import Path
-from agent_core import agent
 
-# Add the parent directory to the Python path so we can import agent_core
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+from agent_core import agent
 
 def main():
     """Run the mental health assistant."""

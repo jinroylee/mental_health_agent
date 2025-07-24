@@ -2,8 +2,8 @@
 Tiny wrapper so UI / CLI only calls agent().
 """
 
-from graphs.mh_graph import build_graph
 import mlflow
+from graphs.mh_graph import build_graph
 
 mlflow.set_experiment("mh-agent-dev")
 mlflow.langchain.autolog()
@@ -11,8 +11,8 @@ mlflow.langchain.autolog()
 # Create the graph instance
 _graph = build_graph()
 
-    
 def agent(user_input: str) -> str:
+    """Run the mental health assistant."""
     with mlflow.start_run(nested=True):
         # Format input state to match ChatState structure
         state_in = {
@@ -21,10 +21,10 @@ def agent(user_input: str) -> str:
             "user_locale": "US",        # Default locale
             "chat_history": [],         # Initialize empty chat history
         }
-        
+
         # Invoke the graph
         state_out = _graph.invoke(state_in)
-        
+
         # Extract the assistant's response from chat_history
         if state_out.get("chat_history"):
             # Get the last message from chat history

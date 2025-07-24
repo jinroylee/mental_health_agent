@@ -19,7 +19,7 @@ from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 
-from graphs.prompts import SYSTEM_PROMPT, CRISIS_SYSTEM_PROMPT
+from graphs.prompts import *
 from graphs.types import ChatState, Diagnosis
 from graphs.utils import _similarity_search, retrieve_crisis_resource, retrieve_reframe_template, retrieve_therapy_script
 
@@ -69,15 +69,7 @@ mood_chain = mood_prompt | llm | StrOutputParser()
 
 # Diagnosis chain with JSON output parser
 diagnosis_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """
-        You are a triage assistant. Analyse the user's latest message **and** prior summary if available.
-        1. Decide if the user is asking for coping therapies (`needs_therapy=true`) or merely wants to discuss / learn.
-        2. If therapies are needed, guess the main condition: depression, anxiety, none.
-        Return ONLY valid JSON: {\"needs_therapy\": bool, \"diagnosis\": \"depression|anxiety|stress|none\"}
-        """,
-    ),
+    DIAGNOSIS_SYSTEM_PROMPT,
     MessagesPlaceholder("history"),
     ("user", "{input}"),
 ])
@@ -138,41 +130,45 @@ summary_chain = summary_prompt | llm | StrOutputParser()
 # Node implementations
 # ---------------------------------------------------------------------------
 
-
 def detect_emotion_node(state: ChatState) -> ChatState:
-    logger.info("=============================================detect_emotion_node ============================================================")
+    logger.info("#########detect_emotion_node#########")
     user_msg = state["last_user_msg"]
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
     mood_raw = mood_chain.invoke({"text": user_msg}).strip().lower()
     state["mood"] = mood_raw if mood_raw in {"happy", "sad", "anxious", "angry", "neutral", "stressed"} else "neutral"  # type: ignore
-    logger.info("=============================================detect_emotion_node ============================================================")
+    print("mood: ", state["mood"])
+    print("risk_level: ", state["risk_level"])
+    logger.info("#########detect_emotion_node#########")
     return state
 
 
 def crisis_path_node(state: ChatState) -> ChatState:
-    logger.info("=============================================crisis_path_node ============================================================")
+    logger.info("#########crisis_path_node#########")
     locale = state.get("user_locale", "US")
     user_msg = state["last_user_msg"]
-    
+
     # Retrieve crisis resources from vector DB
     resource_text = retrieve_crisis_resource(retriever, locale)
-    
+
+    print("resource_text: ", resource_text)
+    print("user_msg: ", user_msg)
+
     # Generate response using crisis chain
     assistant_response = crisis_chain.invoke({
         "resources": resource_text,
         "user_message": user_msg
     })
-    
+
     state["chat_history"].append(AIMessage(content=assistant_response))
-    logger.info("=============================================crisis_path_node ============================================================")
+    logger.info("#########crisis_path_node#########")
     return {"end_session": True}
 
 
 def session_initializer_node(state: ChatState) -> ChatState:
     """Runs at the start of every session to pull latest summary."""
-    print("=============================================session_initializer_node ============================================================")
+    print("#########session_initializer_node#########")
     print("user_id: ", state["user_id"])
     user_id = state["user_id"]
     docs = retriever.vectorstore.similarity_search(
@@ -188,8 +184,9 @@ def session_initializer_node(state: ChatState) -> ChatState:
             AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
         )
     print("prior_summary: ", summary)
-    print("=============================================session_initializer_node ============================================================")
-    return {"prior_summary": summary}
+    print("#########session_initializer_node#########")
+    state.update(prior_summary=summary)
+    return state
 
 def diagnose_node(state: ChatState) -> ChatState:
     user_msg = state["last_user_msg"]
@@ -227,19 +224,19 @@ def nlp_parse_node(state: ChatState) -> ChatState:  # placeholder
 
     For this skeleton we simply pass through.
     """
-    print("=============================================nlp_parse_node ============================================================")
+    print("#########nlp_parse_node#########")
     print("state: ", state)
-    print("=============================================nlp_parse_node ============================================================")
+    print("#########nlp_parse_node#########")
     return {}
 
 def distortion_detector_node(state: ChatState) -> ChatState:
-    print("=============================================distortion_detector_node ============================================================")
+    print("#########distortion_detector_node#########")
     print("last_user_msg: ", state["last_user_msg"])
     
     label = distortion_chain.invoke({"message": state['last_user_msg']}).strip().lower()
     print("label: ", label)
     label = None if label == "none" else label
-    print("=============================================distortion_detector_node ============================================================")
+    print("#########distortion_detector_node#########")
     return {"detected_distortion": label}
 
 def reframe_prompt_node(state: ChatState) -> ChatState:
@@ -277,7 +274,6 @@ def guide_exercise_node(state: ChatState) -> ChatState:
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
     return state
 
-# 11) Collect feedback --------------------------------------------------------
 
 def collect_feedback_node(state: ChatState) -> ChatState:
     user_msg = state["last_user_msg"]
