@@ -15,7 +15,9 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import END, START, StateGraph
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts.chat import ChatPromptValue
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from langchain_core.documents import Document
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 
@@ -59,6 +61,23 @@ conversation_memory = ConversationBufferMemory(return_messages=True)
 # ---------------------------------------------------------------------------
 # Chain definitions
 # ---------------------------------------------------------------------------
+def log_llm_input(messages: ChatPromptValue):
+    """Log the formatted prompt that gets sent to the LLM."""
+    print("=== FORMATTED PROMPT TO LLM ===")
+    for msg in messages.to_messages():
+        print(f"Role: {msg.type}")
+        print(f"Content: {msg.content}")
+        print("---")
+    print("=== END FORMATTED PROMPT ===")
+    return messages
+
+def log_llm_output(output):
+    """Log the raw LLM output before parsing."""
+    logger.info("Raw LLM output for diagnosis: %s", output.content)
+    print("=== RAW LLM OUTPUT ===")
+    print(output.content)
+    print("=== END RAW OUTPUT ===")
+    return output
 
 # Mood detection chain
 mood_prompt = ChatPromptTemplate.from_messages([
@@ -69,10 +88,11 @@ mood_chain = mood_prompt | llm | StrOutputParser()
 
 # Diagnosis chain with JSON output parser
 diagnosis_prompt = ChatPromptTemplate.from_messages([
-    DIAGNOSIS_SYSTEM_PROMPT,
+   ( "system", DIAGNOSIS_SYSTEM_PROMPT),
     MessagesPlaceholder("history"),
     ("user", "{input}"),
 ])
+
 diagnosis_parser = JsonOutputParser()
 diagnosis_chain = diagnosis_prompt | llm | diagnosis_parser
 
@@ -117,7 +137,7 @@ reframe_prompt = ChatPromptTemplate.from_messages([
     ("system", "Template:\n{tmpl}"),
     ("user", "User said: {u}\nPlease respond with Socratic coaching."),
 ])
-reframe_chain = reframe_prompt | llm | StrOutputParser()
+reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
 # Summary generation chain
 summary_prompt = ChatPromptTemplate.from_messages([
@@ -189,13 +209,17 @@ def session_initializer_node(state: ChatState) -> ChatState:
     return state
 
 def diagnose_node(state: ChatState) -> ChatState:
+    """Diagnose the user's mental health condition."""
+    print("#########diagnose_node#########")
     user_msg = state["last_user_msg"]
+    print("user_msg: ", user_msg)
     
     try:
         data = diagnosis_chain.invoke({
             "history": state.get("chat_history", []), 
             "input": user_msg
         })
+        print("data: ", data)
         needs_therapy = bool(data.get("needs_therapy", False))
         diagnosis: Diagnosis = data.get("diagnosis", "none")  # type: ignore[assignment]
     except (json.JSONDecodeError, Exception) as e:
@@ -203,6 +227,7 @@ def diagnose_node(state: ChatState) -> ChatState:
         needs_therapy, diagnosis = False, "none"
 
     state.update(needs_therapy=needs_therapy, diagnosis=diagnosis)  # type: ignore[arg-type]
+    print("#########diagnose_node#########")
     return state
 
 
@@ -219,7 +244,7 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
     state.setdefault("chat_history", []).append(AIMessage(content=answer))
     return state
 
-def nlp_parse_node(state: ChatState) -> ChatState:  # placeholder
+def nlp_parse_node(state: ChatState) -> ChatState: 
     """In a production system you would use spaCy / Transformers here.
 
     For this skeleton we simply pass through.
@@ -240,51 +265,62 @@ def distortion_detector_node(state: ChatState) -> ChatState:
     return {"detected_distortion": label}
 
 def reframe_prompt_node(state: ChatState) -> ChatState:
+    """
+    Reframe the user's message based on the detected distortion.
+    """
+    print("#########reframe_prompt_node#########")
+    print("last_user_msg: ", state["last_user_msg"])
+    print("detected_distortion: ", state["detected_distortion"])
     distortion = state["detected_distortion"]
     template = retrieve_reframe_template(retriever, distortion) if distortion else ""
-    
+    print("template: ", template)
     reply = reframe_chain.invoke({
         "tmpl": template, 
         "u": state["last_user_msg"]
     })
-    
+    print("reply: ", reply)
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    print("#########reframe_prompt_node#########")
     return state
 
 def therapy_planner_node(state: ChatState) -> ChatState:
+    print("#########therapy_planner_node#########")
     diagnosis: Diagnosis = state.get("diagnosis", "none")
     filters = {"doc_type": "therapy_script"}
     if diagnosis != "none":
         filters["therapy_diagnosis"] = diagnosis
-    docs = _similarity_search(retriever,
-        query=f"coping therapy script for {diagnosis}" if diagnosis != "none" else "general coping therapy script",
-        filters=filters,
-        k=3,
-    )
-    script = "\n\n".join(d.page_content for d in docs) or "Let's do a simple grounding exercise: notice 5 things you can see…"
-    state.update(therapy_script=script, therapy_attempts=0)  # type: ignore[arg-type]
+    therapy_script = retrieve_therapy_script(retriever, diagnosis)
+    print("therapy_script: ", therapy_script)
+    state.update(therapy_script=therapy_script, therapy_attempts=0)  # type: ignore[arg-type]
+    print("#########therapy_planner_node#########")
     return state
 
 
 def guide_exercise_node(state: ChatState) -> ChatState:
+    print("#########guide_exercise_node#########")
     script = state.get("therapy_script", "Let's begin a breathing exercise…")
     intro = script.split("\n")[0]
     reply = f"Let's try this together. {intro}\nWhen you're ready, let me know how that felt."
+    print("reply: ", reply)
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
+    print("#########guide_exercise_node#########")
     return state
 
 
 def collect_feedback_node(state: ChatState) -> ChatState:
+    print("#########collect_feedback_node#########")
     user_msg = state["last_user_msg"]
-    
+    print("user_msg: ", user_msg)
     sentiment_raw = sentiment_chain.invoke({"feedback": user_msg}).strip().lower()
     sentiment = sentiment_raw if sentiment_raw in {"positive", "neutral", "negative"} else "neutral"
     state.update(feedback_sentiment=sentiment)  # type: ignore[arg-type]
+    print("#########collect_feedback_node#########")
     return state
 
 
 def adjust_instruction_node(state: ChatState) -> ChatState:
+    print("#########adjust_instruction_node#########")
     sentiment = state.get("feedback_sentiment", "neutral")
     if sentiment == "negative":
         reply = (
@@ -294,28 +330,28 @@ def adjust_instruction_node(state: ChatState) -> ChatState:
     else:
         reply = "Great job! We'll keep practicing this therapy since it seems helpful."
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    print("#########adjust_instruction_node#########")
     return state
 
 
 def summary_writer_node(state: ChatState) -> ChatState:
+    print("#########summary_writer_node#########")
     convo = "\n".join(m.content for m in state.get("chat_history", []))
-
+    print("convo: ", convo)
     summary = summary_chain.invoke({"conv": convo})
-    
+    print("summary: ", summary)
     # Persist into vector DB
-    retriever.vectorstore.add_documents(
-        [
-            {
-                "page_content": summary,
-                "metadata": {
-                    "user_id": state["user_id"],
-                    "timestamp": str(int(time.time())),
-                    "doc_type": "session_summary",
-                },
-            }
-        ]
+    doc = Document(
+        page_content=summary,
+        metadata={
+            "user_id": state["user_id"],
+            "timestamp": str(int(time.time())),
+            "doc_type": "session_summary",
+        }
     )
+    retriever.vectorstore.add_documents([doc])
     logger.info("Session summary stored. Length: %d chars", len(summary))
+    print("#########summary_writer_node#########")
     return {}
 
 # ---------------------------------------------------------------------------
@@ -329,11 +365,11 @@ def is_crisis(state: ChatState) -> bool:
 def has_distortion(state: ChatState) -> bool:
     return bool(state.get("detected_distortion"))
 
-
 def needs_adjust(state: ChatState) -> bool:
     return state.get("feedback_sentiment") == "negative"
 
 def needs_therapy_script(state: ChatState) -> bool:
+    print("needs_therapy_script: ", state.get("needs_therapy"))
     return state.get("needs_therapy")
 
 

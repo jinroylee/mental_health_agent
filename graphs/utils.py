@@ -19,10 +19,13 @@ def retrieve_crisis_resource(retriever, locale: str) -> str:
     """Retrieve locale‑specific crisis hotline from the vector store."""
     logger.info("==========retrieve_crisis_resource ==================")
     try:
-        docs = retriever.vectorstore.similarity_search(
-            query=f"{locale} suicide prevention", k=1, filter={"doc_type": "crisis_resource"}
+        docs = _similarity_search(
+            retriever,
+            query=f"{locale} suicide prevention",
+            filters={"doc_type": "crisis_resource"},
+            k=1,
         )
-        print("docs: ", docs)
+        print("docs: ", docs[0].page_content)
 
         logger.info("==========retrieve_crisis_resource ==================")
         return docs[0].page_content if docs else CRISIS_RESOURCE_FALLBACK
@@ -35,19 +38,22 @@ def retrieve_reframe_template(retriever, distortion_label: str) -> str:
     logger.info("==========retrieve_reframe_template ==================")
     docs = _similarity_search(retriever,
         query=f"Socratic questions for {distortion_label}",
-        filters={"doc_type": "reframe_template", "distortion_label": distortion_label},
+        filters={"doc_type": "reframe_template"},
         k=1,
     )
+    print("docs: ", docs[0].page_content)
     logger.info("==========retrieve_reframe_template ==================")
     return docs[0].page_content if docs else "Could there be another perspective on this?"
 
 def retrieve_therapy_script(retriever, query: str) -> str:
     """Retrieve a coping therapy script matching query (mood/goal)."""
     logger.info("==========retrieve_therapy_script ==================")
-    docs = retriever.vectorstore.similarity_search(
+    docs = _similarity_search(
+        retriever,
         query=query,
-        k=1,
-        filter={"doc_type": "therapy_script"},
+        filters={"doc_type": "therapy_resource"},
+        k=3,
     )
     logger.info("==========retrieve_therapy_script ==================")
-    return docs[0].page_content if docs else "Let's practice slow, deep breathing together."  
+    script = "\n\n".join(d.page_content for d in docs) or "Let's do a simple grounding exercise: notice 5 things you can see…"
+    return script
