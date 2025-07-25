@@ -191,10 +191,11 @@ def session_initializer_node(state: ChatState) -> ChatState:
     print("#########session_initializer_node#########")
     print("user_id: ", state["user_id"])
     user_id = state["user_id"]
-    docs = retriever.vectorstore.similarity_search(
+    docs = _similarity_search(
+        retriever,
         query="latest session summary",
+        filters={"user_id": user_id, "doc_type": "session_summary"},
         k=1,
-        filter={"user_id": user_id, "doc_type": "session_summary"},
     )
     print("docs: ", docs)
     summary = docs[0].page_content if docs else ""
