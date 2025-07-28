@@ -24,12 +24,14 @@ from pinecone import Pinecone
 from graphs.prompts import *
 from graphs.types import ChatState, Diagnosis
 from graphs.utils import _similarity_search, retrieve_crisis_resource, retrieve_reframe_template, retrieve_therapy_script
+from graphs.pretty_logging import get_pretty_logger
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+pretty_logger = get_pretty_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Environment & shared resources
@@ -63,20 +65,20 @@ conversation_memory = ConversationBufferMemory(return_messages=True)
 # ---------------------------------------------------------------------------
 def log_llm_input(messages: ChatPromptValue):
     """Log the formatted prompt that gets sent to the LLM."""
-    print("=== FORMATTED PROMPT TO LLM ===")
+    pretty_logger.function_separator("FORMATTED PROMPT TO LLM")
     for msg in messages.to_messages():
-        print(f"Role: {msg.type}")
-        print(f"Content: {msg.content}")
-        print("---")
-    print("=== END FORMATTED PROMPT ===")
+        pretty_logger.state_print("Role", msg.type)
+        pretty_logger.content_block(str(msg.content), "Content")
+        pretty_logger.separator_line("─", 30)
+    pretty_logger.function_separator("END FORMATTED PROMPT")
     return messages
 
 def log_llm_output(output):
     """Log the raw LLM output before parsing."""
-    logger.info("Raw LLM output for diagnosis: %s", output.content)
-    print("=== RAW LLM OUTPUT ===")
-    print(output.content)
-    print("=== END RAW OUTPUT ===")
+    pretty_logger.info("Raw LLM output for diagnosis: %s", output.content)
+    pretty_logger.function_separator("RAW LLM OUTPUT")
+    pretty_logger.content_block(str(output.content))
+    pretty_logger.function_separator("END RAW OUTPUT")
     return output
 
 # Mood detection chain
@@ -151,29 +153,29 @@ summary_chain = summary_prompt | llm | StrOutputParser()
 # ---------------------------------------------------------------------------
 
 def detect_emotion_node(state: ChatState) -> ChatState:
-    logger.info("#########detect_emotion_node#########")
+    pretty_logger.node_separator_top("detect_emotion_node")
     user_msg = state["last_user_msg"]
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
     mood_raw = mood_chain.invoke({"text": user_msg}).strip().lower()
     state["mood"] = mood_raw if mood_raw in {"happy", "sad", "anxious", "angry", "neutral", "stressed"} else "neutral"  # type: ignore
-    print("mood: ", state["mood"])
-    print("risk_level: ", state["risk_level"])
-    logger.info("#########detect_emotion_node#########")
+    pretty_logger.state_print("mood", state["mood"])
+    pretty_logger.state_print("risk_level", state["risk_level"])
+    pretty_logger.node_separator_bottom("detect_emotion_node")
     return state
 
 
 def crisis_path_node(state: ChatState) -> ChatState:
-    logger.info("#########crisis_path_node#########")
+    pretty_logger.node_separator_top("crisis_path_node")
     locale = state.get("user_locale", "US")
     user_msg = state["last_user_msg"]
 
     # Retrieve crisis resources from vector DB
     resource_text = retrieve_crisis_resource(retriever, locale)
 
-    print("resource_text: ", resource_text)
-    print("user_msg: ", user_msg)
+    pretty_logger.state_print("resource_text", resource_text)
+    pretty_logger.state_print("user_msg", user_msg)
 
     # Generate response using crisis chain
     assistant_response = crisis_chain.invoke({
@@ -182,14 +184,14 @@ def crisis_path_node(state: ChatState) -> ChatState:
     })
 
     state["chat_history"].append(AIMessage(content=assistant_response))
-    logger.info("#########crisis_path_node#########")
+    pretty_logger.node_separator_bottom("crisis_path_node")
     return {"end_session": True}
 
 
 def session_initializer_node(state: ChatState) -> ChatState:
     """Runs at the start of every session to pull latest summary."""
-    print("#########session_initializer_node#########")
-    print("user_id: ", state["user_id"])
+    pretty_logger.node_separator_top("session_initializer_node")
+    pretty_logger.state_print("user_id", state["user_id"])
     user_id = state["user_id"]
     docs = _similarity_search(
         retriever,
@@ -197,38 +199,36 @@ def session_initializer_node(state: ChatState) -> ChatState:
         filters={"user_id": user_id, "doc_type": "session_summary"},
         k=1,
     )
-    print("docs: ", docs)
+    pretty_logger.state_print("docs", docs)
     summary = docs[0].page_content if docs else ""
-    print("summary: ", summary)
     if summary:
         state["chat_history"].append(
             AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
         )
-    print("prior_summary: ", summary)
-    print("#########session_initializer_node#########")
+    pretty_logger.state_print("Chat history", state["chat_history"])
+    pretty_logger.node_separator_bottom("session_initializer_node")
     state.update(prior_summary=summary)
     return state
 
 def diagnose_node(state: ChatState) -> ChatState:
     """Diagnose the user's mental health condition."""
-    print("#########diagnose_node#########")
+    pretty_logger.node_separator_top("diagnose_node")
     user_msg = state["last_user_msg"]
-    print("user_msg: ", user_msg)
     
     try:
         data = diagnosis_chain.invoke({
             "history": state.get("chat_history", []), 
             "input": user_msg
         })
-        print("data: ", data)
+        pretty_logger.state_print("data", data)
         needs_therapy = bool(data.get("needs_therapy", False))
         diagnosis: Diagnosis = data.get("diagnosis", "none")  # type: ignore[assignment]
     except (json.JSONDecodeError, Exception) as e:
-        logger.warning("Diagnose JSON parse error: %s", e)
+        pretty_logger.warning("Diagnose JSON parse error: %s", e)
         needs_therapy, diagnosis = False, "none"
 
     state.update(needs_therapy=needs_therapy, diagnosis=diagnosis)  # type: ignore[arg-type]
-    print("#########diagnose_node#########")
+    pretty_logger.node_separator_bottom("diagnose_node")
     return state
 
 
@@ -250,78 +250,77 @@ def nlp_parse_node(state: ChatState) -> ChatState:
 
     For this skeleton we simply pass through.
     """
-    print("#########nlp_parse_node#########")
-    print("state: ", state)
-    print("#########nlp_parse_node#########")
+    pretty_logger.node_separator_top("nlp_parse_node")
+    pretty_logger.state_print("state", state)
+    pretty_logger.node_separator_bottom("nlp_parse_node")
     return {}
 
 def distortion_detector_node(state: ChatState) -> ChatState:
-    print("#########distortion_detector_node#########")
-    print("last_user_msg: ", state["last_user_msg"])
+    pretty_logger.node_separator_top("distortion_detector_node")
+    pretty_logger.state_print("last_user_msg", state["last_user_msg"])
     
     label = distortion_chain.invoke({"message": state['last_user_msg']}).strip().lower()
-    print("label: ", label)
+    pretty_logger.state_print("label", label)
     label = None if label == "none" else label
-    print("#########distortion_detector_node#########")
+    pretty_logger.node_separator_bottom("distortion_detector_node")
     return {"detected_distortion": label}
 
 def reframe_prompt_node(state: ChatState) -> ChatState:
     """
     Reframe the user's message based on the detected distortion.
     """
-    print("#########reframe_prompt_node#########")
-    print("last_user_msg: ", state["last_user_msg"])
-    print("detected_distortion: ", state["detected_distortion"])
+    pretty_logger.node_separator_top("reframe_prompt_node")
+    pretty_logger.state_print("last_user_msg", state["last_user_msg"])
+    pretty_logger.state_print("detected_distortion", state["detected_distortion"])
     distortion = state["detected_distortion"]
     template = retrieve_reframe_template(retriever, distortion) if distortion else ""
-    print("template: ", template)
+    pretty_logger.state_print("template", template)
     reply = reframe_chain.invoke({
         "tmpl": template, 
         "u": state["last_user_msg"]
     })
-    print("reply: ", reply)
+    pretty_logger.state_print("reply", reply)
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
-    print("#########reframe_prompt_node#########")
+    pretty_logger.node_separator_bottom("reframe_prompt_node")
     return state
 
 def therapy_planner_node(state: ChatState) -> ChatState:
-    print("#########therapy_planner_node#########")
+    pretty_logger.node_separator_top("therapy_planner_node")
     diagnosis: Diagnosis = state.get("diagnosis", "none")
     filters = {"doc_type": "therapy_script"}
     if diagnosis != "none":
         filters["therapy_diagnosis"] = diagnosis
     therapy_script = retrieve_therapy_script(retriever, diagnosis)
-    print("therapy_script: ", therapy_script)
-    state.update(therapy_script=therapy_script, therapy_attempts=0)  # type: ignore[arg-type]
-    print("#########therapy_planner_node#########")
+    state.update(therapy_script=therapy_script, therapy_attempts=0)
+    pretty_logger.node_separator_bottom("therapy_planner_node")
     return state
 
 
 def guide_exercise_node(state: ChatState) -> ChatState:
-    print("#########guide_exercise_node#########")
+    pretty_logger.node_separator_top("guide_exercise_node")
     script = state.get("therapy_script", "Let's begin a breathing exercise…")
     intro = script.split("\n")[0]
     reply = f"Let's try this together. {intro}\nWhen you're ready, let me know how that felt."
-    print("reply: ", reply)
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    pretty_logger.state_print("Chat history", state["chat_history"])
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
-    print("#########guide_exercise_node#########")
+    pretty_logger.node_separator_bottom("guide_exercise_node")
     return state
 
 
 def collect_feedback_node(state: ChatState) -> ChatState:
-    print("#########collect_feedback_node#########")
+    pretty_logger.node_separator_top("collect_feedback_node")
     user_msg = state["last_user_msg"]
-    print("user_msg: ", user_msg)
+    pretty_logger.state_print("user_msg", user_msg)
     sentiment_raw = sentiment_chain.invoke({"feedback": user_msg}).strip().lower()
     sentiment = sentiment_raw if sentiment_raw in {"positive", "neutral", "negative"} else "neutral"
     state.update(feedback_sentiment=sentiment)  # type: ignore[arg-type]
-    print("#########collect_feedback_node#########")
+    pretty_logger.node_separator_bottom("collect_feedback_node")
     return state
 
 
 def adjust_instruction_node(state: ChatState) -> ChatState:
-    print("#########adjust_instruction_node#########")
+    pretty_logger.node_separator_top("adjust_instruction_node")
     sentiment = state.get("feedback_sentiment", "neutral")
     if sentiment == "negative":
         reply = (
@@ -331,16 +330,17 @@ def adjust_instruction_node(state: ChatState) -> ChatState:
     else:
         reply = "Great job! We'll keep practicing this therapy since it seems helpful."
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
-    print("#########adjust_instruction_node#########")
+    pretty_logger.state_print("Chat history", state["chat_history"])
+    pretty_logger.node_separator_bottom("adjust_instruction_node")
     return state
 
 
 def summary_writer_node(state: ChatState) -> ChatState:
-    print("#########summary_writer_node#########")
+    pretty_logger.node_separator_top("summary_writer_node")
     convo = "\n".join(m.content for m in state.get("chat_history", []))
-    print("convo: ", convo)
+    pretty_logger.state_print("convo", convo)
     summary = summary_chain.invoke({"conv": convo})
-    print("summary: ", summary)
+    pretty_logger.state_print("summary", summary)
     # Persist into vector DB
     doc = Document(
         page_content=summary,
@@ -351,8 +351,8 @@ def summary_writer_node(state: ChatState) -> ChatState:
         }
     )
     retriever.vectorstore.add_documents([doc])
-    logger.info("Session summary stored. Length: %d chars", len(summary))
-    print("#########summary_writer_node#########")
+    pretty_logger.info("Session summary stored. Length: %d chars", len(summary))
+    pretty_logger.node_separator_bottom("summary_writer_node")
     return {}
 
 # ---------------------------------------------------------------------------
@@ -370,7 +370,6 @@ def needs_adjust(state: ChatState) -> bool:
     return state.get("feedback_sentiment") == "negative"
 
 def needs_therapy_script(state: ChatState) -> bool:
-    print("needs_therapy_script: ", state.get("needs_therapy"))
     return state.get("needs_therapy")
 
 
