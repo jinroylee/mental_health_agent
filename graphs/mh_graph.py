@@ -13,7 +13,7 @@ from langchain.chains.moderation import OpenAIModerationChain
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.graph import END, START, StateGraph
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.prompts.chat import ChatPromptValue
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
@@ -155,6 +155,7 @@ summary_chain = summary_prompt | llm | StrOutputParser()
 def detect_emotion_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("detect_emotion_node")
     user_msg = state["last_user_msg"]
+
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
@@ -192,19 +193,32 @@ def session_initializer_node(state: ChatState) -> ChatState:
     """Runs at the start of every session to pull latest summary."""
     pretty_logger.node_separator_top("session_initializer_node")
     pretty_logger.state_print("user_id", state["user_id"])
+    user_msg = state["last_user_msg"]
     user_id = state["user_id"]
+    # Get all session summaries for this user, then find the most recent by timestamp
     docs = _similarity_search(
         retriever,
-        query="latest session summary",
+        query="session summary",
         filters={"user_id": user_id, "doc_type": "session_summary"},
-        k=1,
+        k=10,  # Get more documents to ensure we capture all sessions
     )
     pretty_logger.state_print("docs", docs)
-    summary = docs[0].page_content if docs else ""
+    
+    # Sort by timestamp (newest first) and get the most recent
+    if docs:
+        sorted_docs = sorted(docs, key=lambda d: int(d.metadata.get("timestamp", "0")), reverse=True)
+        summary = sorted_docs[0].page_content
+        pretty_logger.state_print("selected_latest_summary", summary)
+    else:
+        summary = ""
     if summary:
         state["chat_history"].append(
             AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
         )
+        
+    # Add user message to chat history
+    state.setdefault("chat_history", []).append(HumanMessage(content=user_msg))
+    
     pretty_logger.state_print("Chat history", state["chat_history"])
     pretty_logger.node_separator_bottom("session_initializer_node")
     state.update(prior_summary=summary)
@@ -233,6 +247,9 @@ def diagnose_node(state: ChatState) -> ChatState:
 
 
 def counseling_dialogue_node(state: ChatState) -> ChatState:
+    pretty_logger.node_separator_top("counseling_dialogue_node")
+    pretty_logger.state_print("state", state)
+
     query = state["last_user_msg"]
     docs = _similarity_search(retriever, query, filters={"doc_type": "counseling_resource", "locale": "en"}, k=4)
     context = "\n\n".join(d.page_content for d in docs)
@@ -241,8 +258,10 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
         "ctx": context, 
         "question": query
     })
-    
+    pretty_logger.state_print("answer", answer)
     state.setdefault("chat_history", []).append(AIMessage(content=answer))
+    pretty_logger.state_print("chat_history", state["chat_history"])
+    pretty_logger.node_separator_bottom("counseling_dialogue_node")
     return state
 
 def nlp_parse_node(state: ChatState) -> ChatState: 
@@ -337,21 +356,59 @@ def adjust_instruction_node(state: ChatState) -> ChatState:
 
 def summary_writer_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("summary_writer_node")
-    convo = "\n".join(m.content for m in state.get("chat_history", []))
+    history = state.get("chat_history",[])
+    convo = "\n\n".join(map(lambda x:
+                f'User: {x.content}' if isinstance(x, HumanMessage) else f'Assistant: {x.content}', history))
     pretty_logger.state_print("convo", convo)
     summary = summary_chain.invoke({"conv": convo})
     pretty_logger.state_print("summary", summary)
-    # Persist into vector DB
+    
+    user_id = state["user_id"]
+    
+    # Delete existing session summaries for this user to maintain one summary per user
+    try:
+        # Query existing session summaries for this user
+        existing_docs = _similarity_search(
+            retriever,
+            query="session summary",
+            filters={"user_id": user_id, "doc_type": "session_summary"},
+            k=10,
+        )
+        
+        # Delete existing summaries if any exist
+        if existing_docs:
+            # Get the vector IDs to delete
+            vector_ids = []
+            for doc in existing_docs:
+                # For Pinecone, we need to use the document ID if available in metadata
+                if hasattr(doc, 'id') and doc.id:
+                    vector_ids.append(doc.id)
+                
+            if vector_ids:
+                # Delete from Pinecone index directly
+                index.delete(ids=vector_ids)
+                pretty_logger.info("Deleted %d existing session summaries for user %s", len(vector_ids), user_id)
+            else:
+                # Fallback: delete by metadata filter (if supported by your Pinecone setup)
+                try:
+                    index.delete(filter={"user_id": user_id, "doc_type": "session_summary"})
+                    pretty_logger.info("Deleted existing session summaries using metadata filter for user %s", user_id)
+                except Exception as e:
+                    pretty_logger.warning("Could not delete by filter: %s", e)
+    except Exception as e:
+        pretty_logger.warning("Error deleting existing summaries: %s", e)
+    
+    # Add the new session summary
     doc = Document(
         page_content=summary,
         metadata={
-            "user_id": state["user_id"],
+            "user_id": user_id,
             "timestamp": str(int(time.time())),
             "doc_type": "session_summary",
         }
     )
     retriever.vectorstore.add_documents([doc])
-    pretty_logger.info("Session summary stored. Length: %d chars", len(summary))
+    pretty_logger.info("New session summary stored. Length: %d chars", len(summary))
     pretty_logger.node_separator_bottom("summary_writer_node")
     return {}
 
