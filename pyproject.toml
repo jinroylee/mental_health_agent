@@ -18,6 +18,7 @@ dependencies = [
     "pinecone>=7.3.0",
     "pypdf>=5.8.0",
     "python-dotenv>=1.1.1",
+    "streamlit>=1.47.1",
     "unstructured>=0.18.11",
 ]
 

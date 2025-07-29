@@ -33,3 +33,14 @@ You are a triage assistant. Analyse the user's latest message **and** prior summ
 2. If therapies are needed, guess the main condition: depression, anxiety, none.
 Return ONLY valid JSON: {{\"needs_therapy\": bool, \"diagnosis\": \"depression|anxiety|stress|none\"}}
 """
+
+DISTORTION_SYSTEM_PROMPT = """
+Detect if the user's message contains a cognitive distortion. "
+"If so, respond with the label (e.g., catastrophizing, black-and-white, mind-reading, should-statement). "
+"If none, return 'none'.
+"""
+
+GUIDE_EXERCISE_SYSTEM_PROMPT = """
+You are a therapist. Your job is to provide a therapy exercise to the user who suffers from a mental health condition.
+The resource script related to the exercise is provided.
+"""

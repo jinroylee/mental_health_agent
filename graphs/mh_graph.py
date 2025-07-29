@@ -100,12 +100,7 @@ diagnosis_chain = diagnosis_prompt | llm | diagnosis_parser
 
 # Distortion detection chain
 distortion_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "Detect if the user's message contains a cognitive distortion. "
-        "If so, respond with the label (e.g., catastrophizing, black-and-white, mind-reading, should-statement). "
-        "If none, return 'none'."
-    ),
+    ("system", DISTORTION_SYSTEM_PROMPT),
     ("human", "{message}"),
 ])
 distortion_chain = distortion_prompt | llm | StrOutputParser()
@@ -141,6 +136,13 @@ reframe_prompt = ChatPromptTemplate.from_messages([
 ])
 reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
+guide_exercise_prompt = ChatPromptTemplate.from_messages([
+    ("system", GUIDE_EXERCISE_SYSTEM_PROMPT),
+    ("system", "Script:\n{script}"),
+    ("user", "User said: {u}\nPlease provide therapy instructions."),
+])
+guide_exercise_chain = guide_exercise_prompt | llm | StrOutputParser()
+
 # Summary generation chain
 summary_prompt = ChatPromptTemplate.from_messages([
     ("system", "Summarise the key points and progress of the following conversation in 3 sentences."),
@@ -155,7 +157,7 @@ summary_chain = summary_prompt | llm | StrOutputParser()
 def detect_emotion_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("detect_emotion_node")
     user_msg = state["last_user_msg"]
-
+    pretty_logger.state_print("awaiting_feedback", state["awaiting_feedback"])
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
@@ -203,7 +205,7 @@ def session_initializer_node(state: ChatState) -> ChatState:
         k=10,  # Get more documents to ensure we capture all sessions
     )
     pretty_logger.state_print("docs", docs)
-    
+
     # Sort by timestamp (newest first) and get the most recent
     if docs:
         sorted_docs = sorted(docs, key=lambda d: int(d.metadata.get("timestamp", "0")), reverse=True)
@@ -318,10 +320,10 @@ def therapy_planner_node(state: ChatState) -> ChatState:
 def guide_exercise_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("guide_exercise_node")
     script = state.get("therapy_script", "Let's begin a breathing exercise…")
-    intro = script.split("\n")[0]
-    reply = f"Let's try this together. {intro}\nWhen you're ready, let me know how that felt."
+    reply = guide_exercise_chain.invoke({"script": script, "u": state["last_user_msg"]})
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
+    state["awaiting_feedback"] = True
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
     pretty_logger.node_separator_bottom("guide_exercise_node")
     return state
@@ -350,6 +352,7 @@ def adjust_instruction_node(state: ChatState) -> ChatState:
         reply = "Great job! We'll keep practicing this therapy since it seems helpful."
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
+    state["awaiting_feedback"] = True
     pretty_logger.node_separator_bottom("adjust_instruction_node")
     return state
 
@@ -419,7 +422,6 @@ def summary_writer_node(state: ChatState) -> ChatState:
 def is_crisis(state: ChatState) -> bool:
     return state.get("risk_level") == "crisis"
 
-
 def has_distortion(state: ChatState) -> bool:
     return bool(state.get("detected_distortion"))
 
@@ -428,6 +430,9 @@ def needs_adjust(state: ChatState) -> bool:
 
 def needs_therapy_script(state: ChatState) -> bool:
     return state.get("needs_therapy")
+
+def needs_feedback(state: ChatState) -> bool:
+    return state.get("awaiting_feedback")
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +473,14 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_edge("crisis_path", END)
 
     # Main flow
-    sg.add_edge("session_initializer", "diagnose")
+    sg.add_conditional_edges(
+        "session_initializer",
+        needs_feedback,
+        {
+            True: "collect_feedback",
+            False: "diagnose",
+        },
+    )
 
     sg.add_conditional_edges(
         "diagnose",
@@ -494,7 +506,6 @@ def build_graph() -> StateGraph[ChatState]:
 
     sg.add_edge("reframe_prompt", "therapy_planner")
     sg.add_edge("therapy_planner", "guide_exercise")
-    sg.add_edge("guide_exercise", "collect_feedback")
 
     sg.add_conditional_edges(
         "collect_feedback",
@@ -506,6 +517,9 @@ def build_graph() -> StateGraph[ChatState]:
     )
 
     sg.add_edge("adjust_instruction", "guide_exercise")
+
+    sg.add_edge("guide_exercise", END)        # stop after giving the exercise
+    sg.add_edge("adjust_instruction", END)
     sg.add_edge("summary_writer", END)
 
     graph = sg.compile()
