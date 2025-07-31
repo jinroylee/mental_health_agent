@@ -4,6 +4,7 @@ Tiny wrapper so UI / CLI only calls agent().
 
 import mlflow
 from graphs.mh_graph import build_graph
+from langchain_core.messages import AIMessage, HumanMessage
 
 mlflow.set_experiment("mh-agent-dev")
 mlflow.langchain.autolog()
@@ -26,13 +27,40 @@ def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US
         # Invoke the graph
         state_out = _graph.invoke(state_in)
 
-        # Extract the assistant's response from chat_history
-        if state_out.get("chat_history"):
-            # Get the last message from chat history
-            last_message = state_out["chat_history"][-1]
-            print(f"await_feedback_prev: {await_feedback_prev}")
-            await_feedback_new = state_out.get("awaiting_feedback", False)
-            print(f"await_feedback_new: {await_feedback_new}")
-            return last_message.content, await_feedback_new 
+        # Extract AI messages that come after the current user message
+        chat_history = state_out.get("chat_history", [])
+        if chat_history:
+            # Find the last occurrence of the current user message
+            user_msg_index = -1
+            for i in range(len(chat_history) - 1, -1, -1):  # Search backwards
+                if (isinstance(chat_history[i], HumanMessage) and 
+                    chat_history[i].content == user_input):
+                    user_msg_index = i
+                    break
+            
+            # Collect AI messages that appear after the user message
+            if user_msg_index >= 0:
+                ai_messages = [
+                    msg.content for msg in chat_history[user_msg_index + 1:]
+                    if isinstance(msg, AIMessage)
+                ]
+            else:
+                # Fallback: if we can't find the user message, collect all AI messages
+                ai_messages = [msg.content for msg in chat_history if isinstance(msg, AIMessage)]
+            
+            if ai_messages:
+                # Merge multiple AI messages into a single response with clear separators
+                if len(ai_messages) == 1:
+                    merged_response = ai_messages[0]
+                else:
+                    # Use clear separators between different response sections
+                    merged_response = "\n\n---\n\n".join(ai_messages)
+                
+                print(f"await_feedback_prev: {await_feedback_prev}")
+                await_feedback_new = state_out.get("awaiting_feedback", False)
+                print(f"await_feedback_new: {await_feedback_new}")
+                return merged_response, await_feedback_new
+            else:
+                return "I'm sorry, I couldn't process your message right now.", False
         else:
-            return "I'm sorry, I couldn't process your message right now."
+            return "I'm sorry, I couldn't process your message right now.", False

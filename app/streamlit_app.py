@@ -53,10 +53,9 @@ st.markdown(
     """
 )
 
+# Initialize session state
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
-
-# Initialize awaiting_feedback state if not exists
 if "awaiting_feedback" not in st.session_state:
     st.session_state["awaiting_feedback"] = False
 
@@ -67,20 +66,21 @@ for m in st.session_state.messages:
 
 # User input
 user_msg = st.chat_input("How are you feeling today?")
+
 if user_msg:
     st.session_state.messages.append({"role": "user", "content": user_msg})
     with st.chat_message("user"):
         st.markdown(user_msg)
 
     with st.spinner("Thinking…"):
-        # Use the stored awaiting_feedback state from previous interaction
+        # Use the persisted awaiting_feedback state from previous conversation
         answer, await_feedback_new = agent(
             user_msg, 
             st.session_state["user_id"], 
             st.session_state["user_locale"], 
             await_feedback_prev=st.session_state["awaiting_feedback"]
         )
-        # Update the session state with the new awaiting_feedback value
+        # Update the state for the next conversation turn
         st.session_state["awaiting_feedback"] = await_feedback_new
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
