@@ -40,7 +40,12 @@ Detect if the user's message contains a cognitive distortion. "
 "If none, return 'none'.
 """
 
-GUIDE_EXERCISE_SYSTEM_PROMPT = """
+ADJUST_INSTRUCTION_SYSTEM_PROMPT = """
 You are a therapist. Your job is to provide a therapy exercise to the user who suffers from a mental health condition.
 The resource script related to the exercise is provided.
+"""
+
+GUIDE_EXERCISE_SYSTEM_PROMPT = """
+You are a therapist. Your job is to provide a therapy exercise to the user who suffers from a mental health condition.
+The resource script related to the exercise is provided. User did not like the initial exercise that was provided.
 """

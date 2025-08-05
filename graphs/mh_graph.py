@@ -143,6 +143,12 @@ guide_exercise_prompt = ChatPromptTemplate.from_messages([
 ])
 guide_exercise_chain = guide_exercise_prompt | llm | StrOutputParser()
 
+adjust_instruction_prompt = ChatPromptTemplate.from_messages([
+    ("system", ADJUST_INSTRUCTION_SYSTEM_PROMPT),
+    ("user", "{u}"),
+])
+adjust_instruction_chain = adjust_instruction_prompt | llm | StrOutputParser()
+
 # Summary generation chain
 summary_prompt = ChatPromptTemplate.from_messages([
     ("system", "Summarise the key points and progress of the following conversation in 3 sentences."),
@@ -342,14 +348,8 @@ def collect_feedback_node(state: ChatState) -> ChatState:
 
 def adjust_instruction_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("adjust_instruction_node")
-    sentiment = state.get("feedback_sentiment", "neutral")
-    if sentiment == "negative":
-        reply = (
-            "Thanks for letting me know. Let's try an alternative approach—perhaps a sensory grounding exercise. "
-            "Focus on naming 5 things you can see, 4 you can touch, 3 you can hear, 2 you can smell, and 1 you can taste."
-        )
-    else:
-        reply = "Great job! We'll keep practicing this therapy since it seems helpful."
+
+    reply = adjust_instruction_chain.invoke({"u": state["last_user_msg"]})
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
     state["awaiting_feedback"] = True
@@ -516,10 +516,9 @@ def build_graph() -> StateGraph[ChatState]:
         },
     )
 
-    sg.add_edge("adjust_instruction", "guide_exercise")
+    sg.add_edge("adjust_instruction", "summary_writer")
 
-    sg.add_edge("guide_exercise", END)        # stop after giving the exercise
-    sg.add_edge("adjust_instruction", END)
+    sg.add_edge("guide_exercise", "summary_writer")        # stop after giving the exercise
     sg.add_edge("summary_writer", END)
 
     graph = sg.compile()
