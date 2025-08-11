@@ -36,7 +36,7 @@ class ChatState(TypedDict, total=False):
     therapy_script: Optional[str]
     therapy_attempts: int
     feedback_sentiment: Optional[str]
-    awaiting_feedback: bool
+    is_feedback: bool
 
     # Summaries
     prior_summary: Optional[str]

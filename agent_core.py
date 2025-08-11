@@ -12,7 +12,7 @@ mlflow.langchain.autolog()
 # Create the graph instance
 _graph = build_graph()
 
-def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US", await_feedback_prev: bool = False) -> str:
+def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US") -> str:
     """Run the mental health assistant."""
     with mlflow.start_run(nested=True):
         # Format input state to match ChatState structure
@@ -20,8 +20,7 @@ def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US
             "last_user_msg": user_input,
             "user_id": user_id,
             "user_locale": user_locale,
-            "chat_history": [],         # Initialize empty chat history
-            "awaiting_feedback": await_feedback_prev,
+            "chat_history": [],      
         }
 
         # Invoke the graph
@@ -56,10 +55,7 @@ def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US
                     # Use clear separators between different response sections
                     merged_response = "\n\n---\n\n".join(ai_messages)
                 
-                print(f"await_feedback_prev: {await_feedback_prev}")
-                await_feedback_new = state_out.get("awaiting_feedback", False)
-                print(f"await_feedback_new: {await_feedback_new}")
-                return merged_response, await_feedback_new
+                return merged_response
             else:
                 return "I'm sorry, I couldn't process your message right now.", False
         else:

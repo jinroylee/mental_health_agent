@@ -88,6 +88,13 @@ mood_prompt = ChatPromptTemplate.from_messages([
 ])
 mood_chain = mood_prompt | llm | StrOutputParser()
 
+classify_feedback_prompt = ChatPromptTemplate.from_messages([
+    ("system", "Based on the conversation history, classify if the user's message is a feedback or not. If feedback, return 'feedback'. If not, return 'none'."),
+    MessagesPlaceholder("history"),
+    ("user", "{input}"),
+])
+classify_feedback_chain = classify_feedback_prompt | llm | StrOutputParser()
+
 # Diagnosis chain with JSON output parser
 diagnosis_prompt = ChatPromptTemplate.from_messages([
    ( "system", DIAGNOSIS_SYSTEM_PROMPT),
@@ -124,6 +131,7 @@ crisis_chain = crisis_prompt | llm | StrOutputParser()
 counseling_prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT + "\nYou are having an exploratory conversation; teach in clear, non‑clinical language."),
     ("system", "Context:\n{ctx}"),
+    MessagesPlaceholder("history"),
     ("user", "{question}"),
 ])
 counseling_chain = counseling_prompt | llm | StrOutputParser()
@@ -163,7 +171,6 @@ summary_chain = summary_prompt | llm | StrOutputParser()
 def detect_emotion_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("detect_emotion_node")
     user_msg = state["last_user_msg"]
-    pretty_logger.state_print("awaiting_feedback", state["awaiting_feedback"])
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
@@ -232,6 +239,15 @@ def session_initializer_node(state: ChatState) -> ChatState:
     state.update(prior_summary=summary)
     return state
 
+#classify if this is a feedback or not. If feedback, collect feedback. If not, continue with the conversation.
+def classify_feedback_node(state: ChatState) -> ChatState:
+    pretty_logger.node_separator_top("classify_feedback_node")
+    feedback_type = classify_feedback_chain.invoke({"history": state.get("chat_history", []), "input": state["last_user_msg"]})
+    pretty_logger.state_print("feedback_type", feedback_type)
+    state.update(is_feedback=feedback_type == "feedback")
+    pretty_logger.node_separator_bottom("classify_feedback_node")
+    return state
+
 def diagnose_node(state: ChatState) -> ChatState:
     """Diagnose the user's mental health condition."""
     pretty_logger.node_separator_top("diagnose_node")
@@ -264,7 +280,8 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
     
     answer = counseling_chain.invoke({
         "ctx": context, 
-        "question": query
+        "question": query,
+        "history": state.get("chat_history", [])
     })
     pretty_logger.state_print("answer", answer)
     state.setdefault("chat_history", []).append(AIMessage(content=answer))
@@ -329,7 +346,6 @@ def guide_exercise_node(state: ChatState) -> ChatState:
     reply = guide_exercise_chain.invoke({"script": script, "u": state["last_user_msg"]})
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
-    state["awaiting_feedback"] = True
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
     pretty_logger.node_separator_bottom("guide_exercise_node")
     return state
@@ -352,7 +368,6 @@ def adjust_instruction_node(state: ChatState) -> ChatState:
     reply = adjust_instruction_chain.invoke({"u": state["last_user_msg"]})
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
-    state["awaiting_feedback"] = True
     pretty_logger.node_separator_bottom("adjust_instruction_node")
     return state
 
@@ -431,9 +446,8 @@ def needs_adjust(state: ChatState) -> bool:
 def needs_therapy_script(state: ChatState) -> bool:
     return state.get("needs_therapy")
 
-def needs_feedback(state: ChatState) -> bool:
-    return state.get("awaiting_feedback")
-
+def is_feedback(state: ChatState) -> bool:
+    return state.get("is_feedback")
 
 # ---------------------------------------------------------------------------
 # Graph builder
@@ -446,6 +460,7 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_node("detect_emotion", detect_emotion_node)
     sg.add_node("crisis_path", crisis_path_node)
     sg.add_node("session_initializer", session_initializer_node)
+    sg.add_node("classify_feedback", classify_feedback_node)
     sg.add_node("diagnose", diagnose_node)
     sg.add_node("counseling_dialogue", counseling_dialogue_node)
     sg.add_node("nlp_parse", nlp_parse_node)
@@ -473,9 +488,11 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_edge("crisis_path", END)
 
     # Main flow
+    sg.add_edge("session_initializer", "classify_feedback")
+
     sg.add_conditional_edges(
-        "session_initializer",
-        needs_feedback,
+        "classify_feedback",
+        is_feedback,
         {
             True: "collect_feedback",
             False: "diagnose",

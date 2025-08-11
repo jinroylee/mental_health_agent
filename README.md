@@ -1,7 +1,4 @@
 Todo:
 
 
-- adjusting exercise is not working well.
-=>pass diagnosis (and maybe the last exercise instruction) as a session summary
-- cannot fetch summary?
-- feedback look should be sessionized maybe? If we exit loop with summarize_session:false, how are we going to remember the last conversation?
+- adjust feedback 할때 전의 피드백을 참고할수 있도록 하는 로직?

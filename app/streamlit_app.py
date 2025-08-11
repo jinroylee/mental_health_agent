@@ -56,8 +56,6 @@ st.markdown(
 # Initialize session state
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
-if "awaiting_feedback" not in st.session_state:
-    st.session_state["awaiting_feedback"] = False
 
 # Display history
 for m in st.session_state.messages:
@@ -77,11 +75,8 @@ if user_msg:
         answer, await_feedback_new = agent(
             user_msg, 
             st.session_state["user_id"], 
-            st.session_state["user_locale"], 
-            await_feedback_prev=st.session_state["awaiting_feedback"]
+            st.session_state["user_locale"]
         )
-        # Update the state for the next conversation turn
-        st.session_state["awaiting_feedback"] = await_feedback_new
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
     with st.chat_message("assistant"):
