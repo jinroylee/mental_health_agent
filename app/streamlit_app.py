@@ -72,7 +72,7 @@ if user_msg:
 
     with st.spinner("Thinking…"):
         # Use the persisted awaiting_feedback state from previous conversation
-        answer, await_feedback_new = agent(
+        answer = agent(
             user_msg, 
             st.session_state["user_id"], 
             st.session_state["user_locale"]
