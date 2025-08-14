@@ -63,6 +63,18 @@ retriever = PineconeVectorStore(index=index, embedding=_embed).as_retriever(
 moderation_chain = OpenAIModerationChain()
 
 # ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+# Keep only the last K messages in working memory to control token usage
+TRIM_HISTORY_MAX_MESSAGES = int(os.getenv("TRIM_HISTORY_MAX_MESSAGES", "5"))
+
+def _trim_chat_history_in_place(state: ChatState) -> None:
+    if not state.get("chat_history"):
+        return
+    if TRIM_HISTORY_MAX_MESSAGES > 0 and len(state["chat_history"]) > TRIM_HISTORY_MAX_MESSAGES:
+        state["chat_history"] = state["chat_history"][-TRIM_HISTORY_MAX_MESSAGES:]
+
+# ---------------------------------------------------------------------------
 # Node implementations
 # ---------------------------------------------------------------------------
 
@@ -114,7 +126,7 @@ def session_initializer_node(state: ChatState) -> ChatState:
     docs = _similarity_search(
         retriever,
         query="session summary",
-        filters={"user_id": user_id, "doc_type": "session_summary"},
+        filters={"user_id": user_id, "doc_type": "session_summary", "thread_id": state.get("thread_id", "")},
         k=10,  # Get more documents to ensure we capture all sessions
     )
     pretty_logger.state_print("docs", docs)
@@ -131,6 +143,8 @@ def session_initializer_node(state: ChatState) -> ChatState:
     #         AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
     #     )
         
+    _trim_chat_history_in_place(state)
+
     # Add user message to chat history
     state["chat_history"].append(HumanMessage(content=user_msg))
     
@@ -285,7 +299,7 @@ def summary_writer_node(state: ChatState) -> ChatState:
 
     # Window size for working memory; only summarize when we exceed this size
     try:
-        window_size = int(os.getenv("TRIM_HISTORY_MAX_MESSAGES", "12"))
+        window_size = TRIM_HISTORY_MAX_MESSAGES
     except Exception:
         window_size = 12
 
@@ -296,8 +310,8 @@ def summary_writer_node(state: ChatState) -> ChatState:
         return {}
 
     # Fold only the oldest message into the rolling summary each turn
-    oldest_message = history[0]
-    oldest_text = f"User: {oldest_message.content}" if isinstance(oldest_message, HumanMessage) else f"Assistant: {oldest_message.content}"
+    oldest_messages = history[:TRIM_HISTORY_MAX_MESSAGES]
+    oldest_text = "\n".join([f"User: {message.content}" if isinstance(message, HumanMessage) else f"Assistant: {message.content}" for message in oldest_messages])
 
     # Build input for updating rolling summary using existing chain
     existing_summary = state.get("prior_summary", "")
@@ -343,6 +357,7 @@ def summary_writer_node(state: ChatState) -> ChatState:
         page_content=new_summary,
         metadata={
             "user_id": user_id,
+            "thread_id": state.get("thread_id", ""),
             "timestamp": str(int(time.time())),
             "doc_type": "session_summary",
         }

@@ -18,7 +18,7 @@ class ChatState(TypedDict, total=False):
     # Static / session‑level
     user_id: str
     user_locale: str
-
+    thread_id: str
     # Rolling conversation buffer
     # Use LangGraph's add_messages reducer so messages are persisted/merged correctly by the checkpointer
     chat_history: Annotated[List[BaseMessage], add_messages]
