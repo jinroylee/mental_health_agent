@@ -92,6 +92,7 @@ crisis_chain = crisis_prompt | llm | StrOutputParser()
 # Counseling dialogue chain
 counseling_prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT + "\nYou are having an exploratory conversation; teach in clear, non‑clinical language."),
+    ("system", "Prior summary (if any):\n{prior_summary}"),
     ("system", "Context:\n{ctx}"),
     MessagesPlaceholder("history"),
     ("user", "{question}"),
@@ -101,6 +102,7 @@ counseling_chain = counseling_prompt | llm | StrOutputParser()
 # Reframe response chain
 reframe_prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
+    ("system", "Prior summary (if any):\n{prior_summary}"),
     ("system", "Template:\n{tmpl}"),
     ("user", "User said: {u}\nPlease respond with Socratic coaching."),
 ])
@@ -108,6 +110,7 @@ reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutpu
 
 guide_exercise_prompt = ChatPromptTemplate.from_messages([
     ("system", GUIDE_EXERCISE_SYSTEM_PROMPT),
+    ("system", "Prior summary (if any):\n{prior_summary}"),
     ("system", "Script:\n{script}"),
     ("user", "User said: {u}\nPlease provide therapy instructions."),
 ])

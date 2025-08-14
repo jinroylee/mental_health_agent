@@ -179,9 +179,10 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
     context = "\n\n".join(d.page_content for d in docs)
     
     answer = counseling_chain.invoke({
-        "ctx": context, 
+        "ctx": context,
+        "prior_summary": state.get("prior_summary", ""),
         "question": query,
-        "history": state.get("chat_history", [])
+        "history": state.get("chat_history", []),
     })
     pretty_logger.state_print("answer", answer)
     state.setdefault("chat_history", []).append(AIMessage(content=answer))
@@ -220,8 +221,9 @@ def reframe_prompt_node(state: ChatState) -> ChatState:
     template = retrieve_reframe_template(retriever, distortion) if distortion else ""
     pretty_logger.state_print("template", template)
     reply = reframe_chain.invoke({
-        "tmpl": template, 
-        "u": state["last_user_msg"]
+        "tmpl": template,
+        "prior_summary": state.get("prior_summary", ""),
+        "u": state["last_user_msg"],
     })
     pretty_logger.state_print("reply", reply)
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
@@ -243,7 +245,11 @@ def therapy_planner_node(state: ChatState) -> ChatState:
 def guide_exercise_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("guide_exercise_node")
     script = state.get("therapy_script", "Let's begin a breathing exercise…")
-    reply = guide_exercise_chain.invoke({"script": script, "u": state["last_user_msg"]})
+    reply = guide_exercise_chain.invoke({
+        "script": script,
+        "prior_summary": state.get("prior_summary", ""),
+        "u": state["last_user_msg"],
+    })
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
@@ -274,40 +280,57 @@ def adjust_instruction_node(state: ChatState) -> ChatState:
 
 def summary_writer_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("summary_writer_node")
-    history = state.get("chat_history",[])
-    convo = "\n\n".join(map(lambda x:
-                f'User: {x.content}' if isinstance(x, HumanMessage) else f'Assistant: {x.content}', history))
-    pretty_logger.state_print("convo", convo)
-    summary = summary_chain.invoke({"conv": convo})
-    pretty_logger.state_print("summary", summary)
-    
+    history = state.get("chat_history", [])
     user_id = state["user_id"]
-    
-    # Delete existing session summaries for this user to maintain one summary per user
+
+    # Window size for working memory; only summarize when we exceed this size
     try:
-        # Query existing session summaries for this user
+        window_size = int(os.getenv("TRIM_HISTORY_MAX_MESSAGES", "12"))
+    except Exception:
+        window_size = 12
+
+    # If we are within the window, skip summarization to save tokens
+    if window_size <= 0 or len(history) <= window_size:
+        pretty_logger.info("History within window (len=%d, window=%d); skipping summary update.", len(history), window_size)
+        pretty_logger.node_separator_bottom("summary_writer_node")
+        return {}
+
+    # Fold only the oldest message into the rolling summary each turn
+    oldest_message = history[0]
+    oldest_text = f"User: {oldest_message.content}" if isinstance(oldest_message, HumanMessage) else f"Assistant: {oldest_message.content}"
+
+    # Build input for updating rolling summary using existing chain
+    existing_summary = state.get("prior_summary", "")
+    conv_for_update = (
+        (f"Existing summary:\n{existing_summary}\n\n" if existing_summary else "")
+        + "New message to incorporate into the summary:\n"
+        + oldest_text
+    )
+    pretty_logger.state_print("rolling_summary_input", conv_for_update)
+    new_summary = summary_chain.invoke({"conv": conv_for_update})
+    pretty_logger.state_print("new_summary", new_summary)
+
+    # Remove the oldest message so the working window slides by one per turn
+    state["chat_history"] = history[1:]
+    state["prior_summary"] = new_summary
+
+    # Persist the updated rolling summary (keep one per user)
+    try:
         existing_docs = _similarity_search(
             retriever,
             query="session summary",
             filters={"user_id": user_id, "doc_type": "session_summary"},
             k=10,
         )
-        
-        # Delete existing summaries if any exist
         if existing_docs:
-            # Get the vector IDs to delete
             vector_ids = []
             for doc in existing_docs:
-                # For Pinecone, we need to use the document ID if available in metadata
                 if hasattr(doc, 'id') and doc.id:
                     vector_ids.append(doc.id)
-                
             if vector_ids:
-                # Delete from Pinecone index directly
                 index.delete(ids=vector_ids)
                 pretty_logger.info("Deleted %d existing session summaries for user %s", len(vector_ids), user_id)
             else:
-                # Fallback: delete by metadata filter (if supported by your Pinecone setup)
                 try:
                     index.delete(filter={"user_id": user_id, "doc_type": "session_summary"})
                     pretty_logger.info("Deleted existing session summaries using metadata filter for user %s", user_id)
@@ -315,10 +338,9 @@ def summary_writer_node(state: ChatState) -> ChatState:
                     pretty_logger.warning("Could not delete by filter: %s", e)
     except Exception as e:
         pretty_logger.warning("Error deleting existing summaries: %s", e)
-    
-    # Add the new session summary
+
     doc = Document(
-        page_content=summary,
+        page_content=new_summary,
         metadata={
             "user_id": user_id,
             "timestamp": str(int(time.time())),
@@ -326,9 +348,10 @@ def summary_writer_node(state: ChatState) -> ChatState:
         }
     )
     retriever.vectorstore.add_documents([doc])
-    pretty_logger.info("New session summary stored. Length: %d chars", len(summary))
+    pretty_logger.info("Updated session summary stored. Length: %d chars", len(new_summary))
     pretty_logger.node_separator_bottom("summary_writer_node")
-    return {}
+    # Return full state so chat_history/prior_summary changes are captured
+    return state
 
 # ---------------------------------------------------------------------------
 # Edge guards
