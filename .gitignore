@@ -7,3 +7,5 @@ data_raw/
 data_raw_backup/
 data_chunks/
 .DS_Store
+
+storage/

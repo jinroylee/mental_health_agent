@@ -1,6 +1,7 @@
 import streamlit as st
 import sys
 from pathlib import Path
+import uuid
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -9,6 +10,13 @@ from agent_core import agent
 
 st.set_page_config(page_title="Mental-Health Support Chat", page_icon="🧘")
 
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+if "conversation_id" not in st.session_state:
+    st.session_state["conversation_id"] = str(uuid.uuid4())
+    
 # Sidebar for user settings
 with st.sidebar:
     st.header("⚙️ User Settings")
@@ -45,6 +53,14 @@ with st.sidebar:
     st.markdown(f"• User ID: `{user_id}`")
     st.markdown(f"• Locale: `{user_locale}`")
 
+    st.markdown("---")
+    st.markdown("**Conversation Controls:**")
+    st.markdown(f"• Conversation ID: `{st.session_state['conversation_id']}`")
+    if st.button("🆕 New Chat"):
+        st.session_state["conversation_id"] = str(uuid.uuid4())
+        st.session_state["messages"] = []
+        st.success("Started a new chat session.")
+
 st.title("🧘 Mental-Health Support Chat")
 st.markdown(
     """
@@ -52,10 +68,6 @@ st.markdown(
     If you feel unsafe with your thoughts, please seek professional help immediately.
     """
 )
-
-# Initialize session state
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
 
 # Display history
 for m in st.session_state.messages:
@@ -67,15 +79,17 @@ user_msg = st.chat_input("How are you feeling today?")
 
 if user_msg:
     st.session_state.messages.append({"role": "user", "content": user_msg})
-    with st.chat_message("user"):
+    with st.chat_message("user"): 
         st.markdown(user_msg)
 
     with st.spinner("Thinking…"):
-        # Use the persisted awaiting_feedback state from previous conversation
+        # We currently compute thread_id inside agent() as user_id:YYYY-MM-DD.
+        # Optionally, you can later pass conversation_id into agent() and derive thread_id there.
         answer = agent(
-            user_msg, 
-            st.session_state["user_id"], 
-            st.session_state["user_locale"]
+            user_msg,
+            st.session_state["user_id"],
+            st.session_state["user_locale"],
+            conversation_id=st.session_state["conversation_id"],
         )
 
     st.session_state.messages.append({"role": "assistant", "content": answer})

@@ -1,7 +1,8 @@
 """ Types for the mental health assistant.
 """
 
-from typing import List, Literal, Optional, TypedDict
+from typing import List, Literal, Optional, TypedDict, Annotated
+from langgraph.graph.message import add_messages
 from langchain_core.messages import  BaseMessage
 
 Mood = Literal["happy", "sad", "anxious", "angry", "neutral", "stressed"]
@@ -19,7 +20,8 @@ class ChatState(TypedDict, total=False):
     user_locale: str
 
     # Rolling conversation buffer
-    chat_history: List[BaseMessage]
+    # Use LangGraph's add_messages reducer so messages are persisted/merged correctly by the checkpointer
+    chat_history: Annotated[List[BaseMessage], add_messages]
 
     # Safety / affect
     mood: Mood

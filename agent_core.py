@@ -5,6 +5,7 @@ Tiny wrapper so UI / CLI only calls agent().
 import mlflow
 from graphs.mh_graph import build_graph
 from langchain_core.messages import AIMessage, HumanMessage
+from datetime import date
 
 mlflow.set_experiment("mh-agent-dev")
 mlflow.langchain.autolog()
@@ -12,7 +13,7 @@ mlflow.langchain.autolog()
 # Create the graph instance
 _graph = build_graph()
 
-def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US") -> str:
+def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US", conversation_id: str | None = None) -> str:
     """Run the mental health assistant."""
     with mlflow.start_run(nested=True):
         # Format input state to match ChatState structure
@@ -20,11 +21,13 @@ def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US
             "last_user_msg": user_input,
             "user_id": user_id,
             "user_locale": user_locale,
-            "chat_history": [],      
+            # IMPORTANT: do not pass an empty chat_history; let the checkpointer manage it
         }
 
         # Invoke the graph
-        state_out = _graph.invoke(state_in)
+        # Use a stable thread_id; prefer per-conversation if provided, else fallback to per-day
+        thread_id = f"{user_id}:{conversation_id}" if conversation_id else f"{user_id}:{date.today().isoformat()}"
+        state_out = _graph.invoke(state_in, config={"configurable": {"thread_id": thread_id}})
 
         # Extract AI messages that come after the current user message
         chat_history = state_out.get("chat_history", [])

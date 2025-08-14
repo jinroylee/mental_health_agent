@@ -10,21 +10,20 @@ from pathlib import Path
 import dotenv
 from openai import OpenAI
 from langchain.chains.moderation import OpenAIModerationChain
-from langchain.memory import ConversationBufferMemory
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langgraph.checkpoint.postgres import PostgresSaver
+from langchain_openai import OpenAIEmbeddings
 from langgraph.graph import END, START, StateGraph
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.prompts.chat import ChatPromptValue
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.documents import Document
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
+from psycopg import Connection
 
 from graphs.prompts import *
 from graphs.types import ChatState, Diagnosis
 from graphs.utils import _similarity_search, retrieve_crisis_resource, retrieve_reframe_template, retrieve_therapy_script
 from graphs.pretty_logging import get_pretty_logger
+from graphs.langchains import *
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -41,14 +40,18 @@ dotenv.load_dotenv(PROJECT_ROOT / ".env")
 
 PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
 INDEX_NAME = os.environ["INDEX_NAME"]
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+POSTGRES_DB_URI = os.getenv("POSTGRES_DB_URI")
+
+connection_kwargs = {
+    "autocommit": True,
+    "prepare_threshold": 0,
+}
+
+conn = Connection.connect(POSTGRES_DB_URI, **connection_kwargs)
 
 openai_client = OpenAI(
-    # This is the default and can be omitted
     api_key=os.environ.get("OPENAI_API_KEY"),
 )
-
-llm = ChatOpenAI(model_name=OPENAI_MODEL, temperature=0.3)
 _embed = OpenAIEmbeddings(model="text-embedding-ada-002")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -58,111 +61,6 @@ retriever = PineconeVectorStore(index=index, embedding=_embed).as_retriever(
 )
 
 moderation_chain = OpenAIModerationChain()
-conversation_memory = ConversationBufferMemory(return_messages=True)
-
-# ---------------------------------------------------------------------------
-# Chain definitions
-# ---------------------------------------------------------------------------
-def log_llm_input(messages: ChatPromptValue):
-    """Log the formatted prompt that gets sent to the LLM."""
-    pretty_logger.function_separator("FORMATTED PROMPT TO LLM")
-    for msg in messages.to_messages():
-        pretty_logger.state_print("Role", msg.type)
-        pretty_logger.content_block(str(msg.content), "Content")
-        pretty_logger.separator_line("─", 30)
-    pretty_logger.function_separator("END FORMATTED PROMPT")
-    return messages
-
-def log_llm_output(output):
-    """Log the raw LLM output before parsing."""
-    pretty_logger.info("Raw LLM output for diagnosis: %s", output.content)
-    pretty_logger.function_separator("RAW LLM OUTPUT")
-    pretty_logger.content_block(str(output.content))
-    pretty_logger.function_separator("END RAW OUTPUT")
-    return output
-
-# Mood detection chain
-mood_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Return one word: happy, sad, anxious, angry, neutral, or stressed."),
-    ("user", "{text}"),
-])
-mood_chain = mood_prompt | llm | StrOutputParser()
-
-classify_feedback_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Based on the conversation history, classify if the user's message is a feedback or not. If feedback, return 'feedback'. If not, return 'none'."),
-    MessagesPlaceholder("history"),
-    ("user", "{input}"),
-])
-classify_feedback_chain = classify_feedback_prompt | llm | StrOutputParser()
-
-# Diagnosis chain with JSON output parser
-diagnosis_prompt = ChatPromptTemplate.from_messages([
-   ( "system", DIAGNOSIS_SYSTEM_PROMPT),
-    MessagesPlaceholder("history"),
-    ("user", "{input}"),
-])
-
-diagnosis_parser = JsonOutputParser()
-diagnosis_chain = diagnosis_prompt | llm | diagnosis_parser
-
-# Distortion detection chain
-distortion_prompt = ChatPromptTemplate.from_messages([
-    ("system", DISTORTION_SYSTEM_PROMPT),
-    ("human", "{message}"),
-])
-distortion_chain = distortion_prompt | llm | StrOutputParser()
-
-# Sentiment analysis chain
-sentiment_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Classify the sentiment of the feedback as positive, neutral, or negative."),
-    ("user", "{feedback}"),
-])
-sentiment_chain = sentiment_prompt | llm | StrOutputParser()
-
-# Crisis response chain
-crisis_prompt = ChatPromptTemplate.from_messages([
-    ("system", CRISIS_SYSTEM_PROMPT),
-    ("system", "Crisis Resources Available:\n{resources}"),
-    ("user", "{user_message}"),
-])
-crisis_chain = crisis_prompt | llm | StrOutputParser()
-
-# Counseling dialogue chain
-counseling_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT + "\nYou are having an exploratory conversation; teach in clear, non‑clinical language."),
-    ("system", "Context:\n{ctx}"),
-    MessagesPlaceholder("history"),
-    ("user", "{question}"),
-])
-counseling_chain = counseling_prompt | llm | StrOutputParser()
-
-# Reframe response chain
-reframe_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("system", "Template:\n{tmpl}"),
-    ("user", "User said: {u}\nPlease respond with Socratic coaching."),
-])
-reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
-
-guide_exercise_prompt = ChatPromptTemplate.from_messages([
-    ("system", GUIDE_EXERCISE_SYSTEM_PROMPT),
-    ("system", "Script:\n{script}"),
-    ("user", "User said: {u}\nPlease provide therapy instructions."),
-])
-guide_exercise_chain = guide_exercise_prompt | llm | StrOutputParser()
-
-adjust_instruction_prompt = ChatPromptTemplate.from_messages([
-    ("system", ADJUST_INSTRUCTION_SYSTEM_PROMPT),
-    ("user", "{u}"),
-])
-adjust_instruction_chain = adjust_instruction_prompt | llm | StrOutputParser()
-
-# Summary generation chain
-summary_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Summarise the key points and progress of the following conversation in 3 sentences."),
-    ("system", "{conv}"),
-])
-summary_chain = summary_prompt | llm | StrOutputParser()
 
 # ---------------------------------------------------------------------------
 # Node implementations
@@ -199,7 +97,7 @@ def crisis_path_node(state: ChatState) -> ChatState:
         "user_message": user_msg
     })
 
-    state["chat_history"].append(AIMessage(content=assistant_response))
+    state.setdefault("chat_history", []).append(AIMessage(content=assistant_response))
     pretty_logger.node_separator_bottom("crisis_path_node")
     return {"end_session": True}
 
@@ -210,6 +108,8 @@ def session_initializer_node(state: ChatState) -> ChatState:
     pretty_logger.state_print("user_id", state["user_id"])
     user_msg = state["last_user_msg"]
     user_id = state["user_id"]
+    # Ensure chat_history is initialized before any appends
+    state.setdefault("chat_history", [])
     # Get all session summaries for this user, then find the most recent by timestamp
     docs = _similarity_search(
         retriever,
@@ -226,13 +126,13 @@ def session_initializer_node(state: ChatState) -> ChatState:
         pretty_logger.state_print("selected_latest_summary", summary)
     else:
         summary = ""
-    if summary:
-        state["chat_history"].append(
-            AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
-        )
+    # if summary:
+    #     state["chat_history"].append(
+    #         AIMessage(content=f"Welcome back. Last time we talked about: {summary}\nHow have you been?")
+    #     )
         
     # Add user message to chat history
-    state.setdefault("chat_history", []).append(HumanMessage(content=user_msg))
+    state["chat_history"].append(HumanMessage(content=user_msg))
     
     pretty_logger.state_print("Chat history", state["chat_history"])
     pretty_logger.node_separator_bottom("session_initializer_node")
@@ -538,7 +438,19 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_edge("guide_exercise", "summary_writer")        # stop after giving the exercise
     sg.add_edge("summary_writer", END)
 
-    graph = sg.compile()
+    # Compile with Postgres checkpointer if configured
+    if not POSTGRES_DB_URI:
+        logger.warning("POSTGRES_DB_URI not set; graph will run without persistent checkpoints.")
+        graph = sg.compile()
+    else:
+        # Dynamically import PostgresSaver to avoid hard dependency at import-time
+        try:
+            checkpointer = PostgresSaver(conn)
+            checkpointer.setup()
+            graph = sg.compile(checkpointer=checkpointer)
+        except Exception as exc:
+            logger.warning("Failed to initialize Postgres checkpointer (%s); running without persistence.", exc)
+            graph = sg.compile()
 
     with open("graph_output.png", "wb") as f:
         f.write(graph.get_graph().draw_mermaid_png())
