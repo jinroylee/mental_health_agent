@@ -64,20 +64,26 @@ def retrieve_with_rewrites(retriever, user_message: str, filters: Optional[dict]
     queries = rewrite_queries(user_message)
     runs = []
     for q in queries:
-        # Use MMR retriever; you can also call store.max_marginal_relevance_search(...)
+        # Use MMR retriever for better diversity
         docs = retriever.invoke(q, filter=filters)
         runs.append(docs)
     fused = rrf_fuse(runs, k=30, C=60)
     return fused
 
-def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] = None, top_k: int = 5) -> List[Document]:
+def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] = None, top_k: int = 5, similarity_threshold: float = 0.5) -> List[Document]:
+    """
+    Retrieve top-k documents with improved similarity filtering.
+    
+    Args:
+        similarity_threshold: Minimum cosine similarity score (default 0.5, was 0.25)
+    """
     fused = retrieve_with_rewrites(retriever, user_message, filters)
     if not fused:
         return []
 
-    # Optional: compute embedding similarity of user query to each doc to gate low-sim hits
+    # Compute embedding similarity of user query to each doc with higher threshold
     qvec = embed.embed_query(user_message[:1000])
-    # Pinecone returns scores if you call the store directly; here's a simple cosine
+    
     def cos(a, b):
         num = sum(x*y for x, y in zip(a, b))
         da = math.sqrt(sum(x*x for x in a))
@@ -86,14 +92,72 @@ def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] =
 
     kept = []
     for d in fused:
-        # If you stored chunk embeddings elsewhere, reuse; otherwise quick re-embed the doc text head
+        # Re-embed the document text head for similarity check
         dvec = embed.embed_query(d.page_content[:512])
-        if cos(qvec, dvec) >= 0.25:   # tune threshold on your eval set
+        similarity_score = cos(qvec, dvec)
+        if similarity_score >= similarity_threshold:
             kept.append(d)
+            pretty_logger.info(f"Document kept with similarity: {similarity_score:.3f}")
+        else:
+            pretty_logger.info(f"Document filtered out with similarity: {similarity_score:.3f}")
         if len(kept) >= top_k:
             break
-    pretty_logger.state_print("kept", kept)
+    
+    pretty_logger.state_print("Documents kept after filtering", len(kept))
     return kept
+
+def format_context_documents(docs: List[Document], doc_type: str = "resource") -> str:
+    """
+    Format retrieved documents into a clear, structured context string.
+    """
+    if not docs:
+        return f"No relevant {doc_type} found in the knowledge base."
+    
+    if len(docs) == 1:
+        return f"Retrieved {doc_type}:\n\n{docs[0].page_content.strip()}"
+    
+    formatted_parts = []
+    for i, doc in enumerate(docs, 1):
+        formatted_parts.append(f"{doc_type.title()} {i}:\n{doc.page_content.strip()}")
+    
+    return f"Retrieved {len(docs)} relevant {doc_type}s:\n\n" + "\n\n---\n\n".join(formatted_parts)
+
+def validate_context_quality(context: str, user_query: str) -> dict:
+    """
+    Validate the quality and relevance of retrieved context.
+    
+    Returns:
+        dict with keys: is_relevant, confidence_score, has_specific_content, recommendations
+    """
+    # Basic quality checks
+    is_fallback = any(phrase in context.lower() for phrase in [
+        "no relevant", "no specific", "not found", "error retrieving", "using fallback"
+    ])
+    
+    has_specific_content = len(context.strip()) > 100 and not is_fallback
+    
+    # Simple relevance check based on keyword overlap
+    query_words = set(user_query.lower().split())
+    context_words = set(context.lower().split())
+    overlap_ratio = len(query_words.intersection(context_words)) / max(len(query_words), 1)
+    
+    confidence_score = 0.8 if has_specific_content and overlap_ratio > 0.2 else 0.3
+    
+    recommendations = []
+    if is_fallback:
+        recommendations.append("Using fallback content - consider expanding knowledge base")
+    if overlap_ratio < 0.1:
+        recommendations.append("Low keyword overlap - context may not be highly relevant")
+    if len(context.strip()) < 50:
+        recommendations.append("Very short context - may lack sufficient detail")
+    
+    return {
+        "is_relevant": has_specific_content and overlap_ratio > 0.1,
+        "confidence_score": confidence_score,
+        "has_specific_content": has_specific_content,
+        "is_fallback": is_fallback,
+        "recommendations": recommendations
+    }
 
 def retrieve_crisis_resource(retriever, locale: str) -> str:
     """Retrieve locale‑specific crisis hotline from the vector store."""
@@ -101,54 +165,87 @@ def retrieve_crisis_resource(retriever, locale: str) -> str:
     try:
         docs = top_k_for_generation(
             retriever,
-            user_message=f"{locale} suicide prevention",
+            user_message=f"{locale} suicide prevention crisis hotline",
             filters={"doc_type": "crisis_resource"},
-            top_k=1,
+            top_k=2,  # Get 2 for redundancy
+            similarity_threshold=0.4,  # Lower threshold for crisis resources
         )
-        pretty_logger.state_print("docs", docs[0].page_content)
-
-        pretty_logger.logger_separator_bottom("retrieve_crisis_resource")
-        return docs[0].page_content if docs else CRISIS_RESOURCE_FALLBACK
+        
+        if docs:
+            formatted_context = format_context_documents(docs, "crisis resource")
+            pretty_logger.state_print("formatted_context", formatted_context)
+            pretty_logger.logger_separator_bottom("retrieve_crisis_resource")
+            return formatted_context
+        else:
+            pretty_logger.warning("No crisis resources found in vector store, using fallback")
+            return f"No specific crisis resources found for {locale}. Using fallback:\n\n{CRISIS_RESOURCE_FALLBACK}"
+            
     except Exception as exc:
         pretty_logger.warning("Failed to retrieve crisis resource: %s", exc)
-        return CRISIS_RESOURCE_FALLBACK
+        return f"Error retrieving crisis resources. Using fallback:\n\n{CRISIS_RESOURCE_FALLBACK}"
 
 def retrieve_reframe_template(retriever, distortion_label: str) -> str:
     """Retrieve a cognitive distortion reframe template from the vector store."""
     pretty_logger.logger_separator_top("retrieve_reframe_template")
+    
     docs = top_k_for_generation(
         retriever,
-        user_message=f"Socratic questions for {distortion_label}",
+        user_message=f"Socratic questions cognitive behavioral therapy {distortion_label} reframe",
         filters={"doc_type": "reframe_template"},
-        top_k=1,
+        top_k=2,  # Get 2 templates for variety
+        similarity_threshold=0.45,
     )
-    pretty_logger.state_print("docs", docs[0].page_content)
-    pretty_logger.logger_separator_bottom("retrieve_reframe_template")
-    return docs[0].page_content if docs else "Could there be another perspective on this?"
+    
+    if docs:
+        formatted_context = format_context_documents(docs, "reframing template")
+        pretty_logger.state_print("formatted_context", formatted_context)
+        pretty_logger.logger_separator_bottom("retrieve_reframe_template")
+        return formatted_context
+    else:
+        fallback = f"No specific reframing template found for '{distortion_label}'. Use these general Socratic questions:\n\n- What evidence supports this thought?\n- What evidence contradicts it?\n- How might someone else view this situation?\n- What would you tell a friend in this situation?\n- What's the most realistic way to look at this?"
+        pretty_logger.warning("No reframe templates found, using fallback")
+        return fallback
 
 def retrieve_counseling_resource(retriever, query: str) -> str:
     """Retrieve a mental health counseling resource from the vector store."""
     pretty_logger.logger_separator_top("retrieve_counseling_resource")
+    
     docs = top_k_for_generation(
         retriever,
-        user_message=f"Counseling resources for {query}",
+        user_message=query,  # Use the original query instead of prefixing
         filters={"doc_type": "counseling_resource"},
-        top_k=1,
+        top_k=3,  # Get 3 resources for comprehensive context
+        similarity_threshold=0.5,
     )
-    pretty_logger.state_print("docs", docs[0].page_content)
-    pretty_logger.logger_separator_bottom("retrieve_counseling_resource")
-    return docs[0].page_content if docs else "Could there be another perspective on this?"
+    
+    if docs:
+        formatted_context = format_context_documents(docs, "counseling resource")
+        pretty_logger.state_print("formatted_context", formatted_context)
+        pretty_logger.logger_separator_bottom("retrieve_counseling_resource")
+        return formatted_context
+    else:
+        fallback = f"No specific counseling resources found for your question. I'll provide general guidance based on evidence-based practices, but you may benefit from consulting with a mental health professional for personalized support."
+        pretty_logger.warning("No counseling resources found, using fallback")
+        return fallback
 
 def retrieve_therapy_script(retriever, query: str) -> str:
     """Retrieve a coping therapy script matching query (mood/goal)."""
     pretty_logger.logger_separator_top("retrieve_therapy_script")
+    
     docs = top_k_for_generation(
         retriever,
-        user_message=query,
+        user_message=f"therapy exercise intervention {query}",
         filters={"doc_type": "therapy_resource"},
-        top_k=3,
+        top_k=3,  # Get multiple scripts for comprehensive approach
+        similarity_threshold=0.45,
     )
-    script = "\n\n".join(d.page_content for d in docs) or "Let's do a simple grounding exercise: notice 5 things you can see…"
-    pretty_logger.state_print("script", script)
-    pretty_logger.logger_separator_bottom("retrieve_therapy_script")
-    return script
+    
+    if docs:
+        formatted_context = format_context_documents(docs, "therapy script")
+        pretty_logger.state_print("formatted_context", formatted_context)
+        pretty_logger.logger_separator_bottom("retrieve_therapy_script")
+        return formatted_context
+    else:
+        fallback = "No specific therapy scripts found. Here's a general grounding exercise:\n\nLet's do a simple grounding exercise:\n1. Notice 5 things you can see around you\n2. Notice 4 things you can touch\n3. Notice 3 things you can hear\n4. Notice 2 things you can smell\n5. Notice 1 thing you can taste\n\nThis can help bring you into the present moment when feeling overwhelmed."
+        pretty_logger.warning("No therapy scripts found, using fallback")
+        return fallback

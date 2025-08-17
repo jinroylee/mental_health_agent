@@ -77,44 +77,46 @@ sentiment_prompt = ChatPromptTemplate.from_messages([
 ])
 sentiment_chain = sentiment_prompt | llm | StrOutputParser()
 
-# Crisis response chain
+# Crisis response chain - enhanced with better context formatting
 crisis_prompt = ChatPromptTemplate.from_messages([
     ("system", CRISIS_SYSTEM_PROMPT),
-    ("system", "Crisis Resources Available:\n{resources}"),
+    ("system", "=== CRISIS RESOURCES ===\n{resources}\n=== END CRISIS RESOURCES ==="),
     ("user", "{user_message}"),
 ])
 crisis_chain = crisis_prompt | llm | StrOutputParser()
 
-# Counseling dialogue chain
+# Counseling dialogue chain - completely revamped with specialized prompt
 counseling_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT + "\nYou are having an exploratory conversation; teach in clear, non‑clinical language."),
-    ("system", "Prior summary (if any):\n{prior_summary}"),
-    ("system", "Context:\n{ctx}"),
+    ("system", ADAPTIVE_COUNSELING_PROMPT),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    ("system", "=== RETRIEVED COUNSELING KNOWLEDGE ===\n{ctx}\n=== END RETRIEVED KNOWLEDGE ===\n\nUse the above knowledge as your primary reference for responding to the user's question."),
     MessagesPlaceholder("history"),
     ("user", "{question}"),
 ])
 counseling_chain = counseling_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
-# Reframe response chain
+# Reframe response chain - updated with specialized prompt
 reframe_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("system", "Prior summary (if any):\n{prior_summary}"),
-    ("system", "Template:\n{tmpl}"),
-    ("user", "User said: {u}\nPlease respond with Socratic coaching."),
+    ("system", REFRAME_SYSTEM_PROMPT),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    ("system", "=== SOCRATIC QUESTIONING TEMPLATE ===\n{tmpl}\n=== END TEMPLATE ===\n\nUse the above template to guide your Socratic questioning approach."),
+    ("user", "User said: {u}\n\nPlease respond using Socratic coaching techniques to help them explore their thoughts."),
 ])
 reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
+# Guide exercise chain - updated with specialized prompt
 guide_exercise_prompt = ChatPromptTemplate.from_messages([
     ("system", GUIDE_EXERCISE_SYSTEM_PROMPT),
-    ("system", "Prior summary (if any):\n{prior_summary}"),
-    ("system", "Script:\n{script}"),
-    ("user", "User said: {u}\nPlease provide therapy instructions."),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    ("system", "=== THERAPEUTIC EXERCISE SCRIPT ===\n{script}\n=== END SCRIPT ===\n\nUse the above script to guide the user through this therapeutic exercise."),
+    ("user", "User said: {u}\n\nPlease provide therapy instructions based on the script above."),
 ])
 guide_exercise_chain = guide_exercise_prompt | llm | StrOutputParser()
 
+# Adjust instruction chain - updated with specialized prompt
 adjust_instruction_prompt = ChatPromptTemplate.from_messages([
     ("system", ADJUST_INSTRUCTION_SYSTEM_PROMPT),
-    ("user", "{u}"),
+    ("user", "User feedback about the previous exercise: {u}\n\nPlease adjust the therapeutic approach based on this feedback."),
 ])
 adjust_instruction_chain = adjust_instruction_prompt | llm | StrOutputParser()
 

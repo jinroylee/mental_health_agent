@@ -114,7 +114,7 @@ def crisis_path_node(state: ChatState) -> ChatState:
     locale = state.get("user_locale", "US")
     user_msg = state["last_user_msg"]
 
-    # Retrieve crisis resources from vector DB
+    # Retrieve crisis resources from vector DB with improved formatting
     resource_text = retrieve_crisis_resource(mmr_retriever, locale)
 
     pretty_logger.state_print("resource_text", resource_text)
@@ -206,7 +206,14 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
     pretty_logger.state_print("state", state)
 
     query = state["last_user_msg"]
+    
+    # Retrieve counseling resources with improved context formatting
     resource = retrieve_counseling_resource(mmr_retriever, query)
+    
+    # Check if we have meaningful context
+    has_relevant_context = "No specific counseling resources found" not in resource
+    pretty_logger.state_print("has_relevant_context", has_relevant_context)
+    
     answer = counseling_chain.invoke({
         "ctx": resource,
         "prior_summary": state.get("prior_summary", ""),
@@ -247,8 +254,15 @@ def reframe_prompt_node(state: ChatState) -> ChatState:
     pretty_logger.state_print("last_user_msg", state["last_user_msg"])
     pretty_logger.state_print("detected_distortion", state["detected_distortion"])
     distortion = state["detected_distortion"]
+    
+    # Retrieve reframing template with improved error handling
     template = retrieve_reframe_template(mmr_retriever, distortion) if distortion else ""
+    
+    # Check if we have a specific template or are using fallback
+    has_specific_template = distortion and "No specific reframing template found" not in template
+    pretty_logger.state_print("has_specific_template", has_specific_template)
     pretty_logger.state_print("template", template)
+    
     reply = reframe_chain.invoke({
         "tmpl": template,
         "prior_summary": state.get("prior_summary", ""),
@@ -262,10 +276,16 @@ def reframe_prompt_node(state: ChatState) -> ChatState:
 def therapy_planner_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("therapy_planner_node")
     diagnosis: Diagnosis = state.get("diagnosis", "none")
-    filters = {"doc_type": "therapy_script"}
-    if diagnosis != "none":
-        filters["therapy_diagnosis"] = diagnosis
-    therapy_script = retrieve_therapy_script(mmr_retriever, diagnosis)
+    
+    # Use diagnosis for more targeted therapy script retrieval
+    query = f"{diagnosis} coping strategies" if diagnosis != "none" else "general mental health coping"
+    therapy_script = retrieve_therapy_script(mmr_retriever, query)
+    
+    # Check if we have specific therapy scripts or are using fallback
+    has_specific_script = "No specific therapy scripts found" not in therapy_script
+    pretty_logger.state_print("has_specific_script", has_specific_script)
+    pretty_logger.state_print("therapy_script", therapy_script)
+    
     state.update(therapy_script=therapy_script, therapy_attempts=0)
     pretty_logger.node_separator_bottom("therapy_planner_node")
     return state
