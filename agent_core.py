@@ -21,7 +21,7 @@ def agent(user_input: str, user_id: str = "default_user", user_locale: str = "US
             "last_user_msg": user_input,
             "user_id": user_id,
             "user_locale": user_locale,
-            "thread_id": thread_id,
+            "thread_id": conversation_id,
             # IMPORTANT: do not pass an empty chat_history; let the checkpointer manage it
         }
 

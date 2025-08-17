@@ -5,12 +5,12 @@ import os
 import logging
 from pathlib import Path
 import dotenv
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.prompts.chat import ChatPromptValue
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from graphs.pretty_logging import get_pretty_logger
 from graphs.prompts import *
+from graphs.shared_config import llm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,9 +18,6 @@ pretty_logger = get_pretty_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 dotenv.load_dotenv(PROJECT_ROOT / ".env")
-
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-llm = ChatOpenAI(model_name=OPENAI_MODEL, temperature=0.3)
 
 # ---------------------------------------------------------------------------
 # Chain definitions
@@ -51,8 +48,7 @@ mood_prompt = ChatPromptTemplate.from_messages([
 mood_chain = mood_prompt | llm | StrOutputParser()
 
 classify_feedback_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Based on the conversation history, classify if the user's message is a feedback or not. If feedback, return 'feedback'. If not, return 'none'."),
-    MessagesPlaceholder("history"),
+    ("system", FEEDBACK_CLASSIFICATION_SYSTEM_PROMPT),
     ("user", "{input}"),
 ])
 classify_feedback_chain = classify_feedback_prompt | llm | StrOutputParser()
@@ -97,7 +93,7 @@ counseling_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder("history"),
     ("user", "{question}"),
 ])
-counseling_chain = counseling_prompt | llm | StrOutputParser()
+counseling_chain = counseling_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
 # Reframe response chain
 reframe_prompt = ChatPromptTemplate.from_messages([

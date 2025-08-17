@@ -3,10 +3,13 @@ import json
 from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
 from pinecone import Pinecone, ServerlessSpec
 from langchain_pinecone import PineconeVectorStore
 import time
+
+# Import shared embedding instance
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from graphs.shared_config import embed
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 dotenv.load_dotenv(PROJECT_ROOT / ".env")
@@ -15,14 +18,14 @@ DATA_DIR   = PROJECT_ROOT / "data_raw"
 CHUNK_DIR  = PROJECT_ROOT / "data_chunks"     # optional cache
 
 # Default chunk size and overlap
-DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP = 800, 200
+DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP = 1200, 150
 
 # Chunk sizes per subdirectory - you can customize these
 CHUNK_SIZES = {
-    "counseling_resource": {"chunk_size": 800, "overlap": 200},
-    "crisis_resource": {"chunk_size": 600, "overlap": 150},      # Smaller chunks for crisis info
-    "reframe_template": {"chunk_size": 400, "overlap": 100},     # Smaller for templates
-    "therapy_resource": {"chunk_size": 1000, "overlap": 250},    # Larger for comprehensive therapy docs
+    "counseling_resource": {"chunk_size": 1200, "overlap": 150},
+    "crisis_resource": {"chunk_size": 1200, "overlap": 150},      # Smaller chunks for crisis info
+    "reframe_template": {"chunk_size": 1200, "overlap": 150},     # Smaller for templates
+    "therapy_resource": {"chunk_size": 1500, "overlap": 200},    # Larger for comprehensive therapy docs
 }
 
 INDEX_NAME = os.environ.get("INDEX_NAME")
@@ -147,8 +150,6 @@ def main():
 
     # Save chunks to data_chunks directory
     save_chunks(chunks)
-
-    embed = OpenAIEmbeddings(model="text-embedding-ada-002")
 
     pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 

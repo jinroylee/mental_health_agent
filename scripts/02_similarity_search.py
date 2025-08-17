@@ -8,9 +8,13 @@ import os
 import sys
 import dotenv
 from pathlib import Path
-from langchain_openai import OpenAIEmbeddings
+import json
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
+
+# Import shared embedding instance
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from graphs.shared_config import embed
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 dotenv.load_dotenv(PROJECT_ROOT / ".env")
@@ -23,7 +27,7 @@ DOC_TYPES = ["counseling_resource", "crisis_resource", "reframe_template", "ther
 def initialize_vector_store():
     """Initialize connection to Pinecone vector store."""
     try:
-        embed = OpenAIEmbeddings(model="text-embedding-ada-002")
+        # embed = OpenAIEmbeddings(model="text-embedding-ada-002") # This line is removed
         pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
         
         # Check if index exists
