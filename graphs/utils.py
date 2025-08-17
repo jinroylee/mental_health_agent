@@ -70,18 +70,18 @@ def retrieve_with_rewrites(retriever, user_message: str, filters: Optional[dict]
     fused = rrf_fuse(runs, k=30, C=60)
     return fused
 
-def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] = None, top_k: int = 5, similarity_threshold: float = 0.5) -> List[Document]:
+def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] = None, top_k: int = 5, similarity_threshold: float = 0.25) -> List[Document]:
     """
     Retrieve top-k documents with improved similarity filtering.
     
     Args:
-        similarity_threshold: Minimum cosine similarity score (default 0.5, was 0.25)
+        similarity_threshold: Minimum cosine similarity score (default 0.3, lowered from 0.5)
     """
     fused = retrieve_with_rewrites(retriever, user_message, filters)
     if not fused:
         return []
 
-    # Compute embedding similarity of user query to each doc with higher threshold
+    # Compute embedding similarity of user query to each doc with moderate threshold
     qvec = embed.embed_query(user_message[:1000])
     
     def cos(a, b):
@@ -168,7 +168,7 @@ def retrieve_crisis_resource(retriever, locale: str) -> str:
             user_message=f"{locale} suicide prevention crisis hotline",
             filters={"doc_type": "crisis_resource"},
             top_k=2,  # Get 2 for redundancy
-            similarity_threshold=0.4,  # Lower threshold for crisis resources
+            similarity_threshold=0.25,  # Lowered threshold for crisis resources (was 0.4)
         )
         
         if docs:
@@ -193,7 +193,7 @@ def retrieve_reframe_template(retriever, distortion_label: str) -> str:
         user_message=f"Socratic questions cognitive behavioral therapy {distortion_label} reframe",
         filters={"doc_type": "reframe_template"},
         top_k=2,  # Get 2 templates for variety
-        similarity_threshold=0.45,
+        similarity_threshold=0.3,  # Lowered threshold (was 0.45)
     )
     
     if docs:
@@ -215,7 +215,7 @@ def retrieve_counseling_resource(retriever, query: str) -> str:
         user_message=query,  # Use the original query instead of prefixing
         filters={"doc_type": "counseling_resource"},
         top_k=3,  # Get 3 resources for comprehensive context
-        similarity_threshold=0.5,
+        similarity_threshold=0.3,  # Lowered threshold (was 0.5)
     )
     
     if docs:
@@ -237,7 +237,7 @@ def retrieve_therapy_script(retriever, query: str) -> str:
         user_message=f"therapy exercise intervention {query}",
         filters={"doc_type": "therapy_resource"},
         top_k=3,  # Get multiple scripts for comprehensive approach
-        similarity_threshold=0.45,
+        similarity_threshold=0.3,  # Lowered threshold (was 0.45)
     )
     
     if docs:

@@ -97,7 +97,9 @@ def _trim_chat_history_in_place(state: ChatState) -> None:
 
 def detect_emotion_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("detect_emotion_node")
-    user_msg = state["last_user_msg"]
+    user_msg = state["last_user_msg"]# Add user message to chat history
+    
+    state["chat_history"].append(HumanMessage(content=user_msg))
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
@@ -161,9 +163,6 @@ def session_initializer_node(state: ChatState) -> ChatState:
     #     )
         
     _trim_chat_history_in_place(state)
-
-    # Add user message to chat history
-    state["chat_history"].append(HumanMessage(content=user_msg))
     
     pretty_logger.state_print("Chat history", state["chat_history"])
     pretty_logger.node_separator_bottom("session_initializer_node")
