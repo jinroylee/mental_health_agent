@@ -57,9 +57,10 @@ mood_chain = mood_prompt | llm | StrOutputParser()
 
 classify_feedback_prompt = ChatPromptTemplate.from_messages([
     ("system", FEEDBACK_CLASSIFICATION_SYSTEM_PROMPT),
+    MessagesPlaceholder("history", optional=True),
     ("user", "{input}"),
 ])
-classify_feedback_chain = classify_feedback_prompt | llm | StrOutputParser()
+classify_feedback_chain = classify_feedback_prompt | log_llm_input | llm | log_llm_output | JsonOutputParser()
 
 # Diagnosis chain with JSON output parser
 diagnosis_prompt = ChatPromptTemplate.from_messages([
@@ -68,15 +69,14 @@ diagnosis_prompt = ChatPromptTemplate.from_messages([
     ("user", "{input}"),
 ])
 
-diagnosis_parser = JsonOutputParser()
-diagnosis_chain = diagnosis_prompt | llm | diagnosis_parser
+diagnosis_chain = diagnosis_prompt | llm | JsonOutputParser()
 
 # Distortion detection chain
 distortion_prompt = ChatPromptTemplate.from_messages([
     ("system", DISTORTION_SYSTEM_PROMPT),
     ("human", "{message}"),
 ])
-distortion_chain = distortion_prompt | llm | StrOutputParser()
+distortion_chain = distortion_prompt | log_llm_input | llm | log_llm_output | JsonOutputParser()
 
 # Sentiment analysis chain
 sentiment_prompt = ChatPromptTemplate.from_messages([
@@ -96,8 +96,8 @@ crisis_chain = crisis_prompt | log_llm_input | llm | log_llm_output | StrOutputP
 # Counseling dialogue chain - completely revamped with specialized prompt
 counseling_prompt = ChatPromptTemplate.from_messages([
     ("system", ADAPTIVE_COUNSELING_PROMPT),
-    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     ("system", "=== RETRIEVED COUNSELING KNOWLEDGE ===\n{ctx}\n=== END RETRIEVED KNOWLEDGE ===\n\nUse the above knowledge as your primary reference for responding to the user's question."),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     MessagesPlaceholder("history"),
     ("user", "{question}"),
 ])
@@ -106,8 +106,9 @@ counseling_chain = counseling_prompt | log_llm_input | llm | log_llm_output | St
 # Reframe response chain - updated with specialized prompt
 reframe_prompt = ChatPromptTemplate.from_messages([
     ("system", REFRAME_SYSTEM_PROMPT),
-    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     ("system", "=== SOCRATIC QUESTIONING TEMPLATE ===\n{tmpl}\n=== END TEMPLATE ===\n\nUse the above template to guide your Socratic questioning approach."),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    MessagesPlaceholder("history"),
     ("user", "User said: {u}\n\nPlease respond using Socratic coaching techniques to help them explore their thoughts."),
 ])
 reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
@@ -115,8 +116,9 @@ reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutpu
 # Guide exercise chain - updated with specialized prompt
 guide_exercise_prompt = ChatPromptTemplate.from_messages([
     ("system", GUIDE_EXERCISE_SYSTEM_PROMPT),
-    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     ("system", "=== THERAPEUTIC EXERCISE SCRIPT ===\n{script}\n=== END SCRIPT ===\n\nUse the above script to guide the user through this therapeutic exercise."),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    MessagesPlaceholder("history"),
     ("user", "User said: {u}\n\nPlease provide therapy instructions based on the script above."),
 ])
 guide_exercise_chain = guide_exercise_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
@@ -124,6 +126,8 @@ guide_exercise_chain = guide_exercise_prompt | log_llm_input | llm | log_llm_out
 # Adjust instruction chain - updated with specialized prompt
 adjust_instruction_prompt = ChatPromptTemplate.from_messages([
     ("system", ADJUST_INSTRUCTION_SYSTEM_PROMPT),
+    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    MessagesPlaceholder("history"),
     ("user", "User feedback about the previous exercise: {u}\n\nPlease adjust the therapeutic approach based on this feedback."),
 ])
 adjust_instruction_chain = adjust_instruction_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()

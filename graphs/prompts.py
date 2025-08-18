@@ -54,13 +54,20 @@ Use the crisis resources below as the primary guidance.
 """
 
 FEEDBACK_CLASSIFICATION_SYSTEM_PROMPT = """
-ROLE: Binary classifier.
-TASK: Determine if the message is feedback about the previous session.
-OUTPUT: Return exactly 'feedback' or 'none'. No other words.
+ROLE: A user feedback detecting assistant.
+
+TASK: 
+- Determine if the latest user message providing a feedback.
+- If it is feedback, set is_feedback=true.
+- If it is not feedback, set is_feedback=false.
+- Do not use any other words or explanations.
+
+OUTPUT: Return only raw JSON (no markdown): {{\"is_feedback\": true|false}}
 """
 
 DIAGNOSIS_SYSTEM_PROMPT = """
 ROLE: Triage assistant.
+
 INSTRUCTIONS:
 - Analyze the latest user message and the prior summary (if available)
 - Set needs_therapy=true if they ask for coping/therapies or show significant distress; else false
@@ -73,11 +80,14 @@ DISTORTION_SYSTEM_PROMPT = """
 ROLE: Cognitive behavioral therapy specialist.
 
 TASK:
-- Read the user's message and decide if they are in crisis with a cognitive distortion
-- If not in crisis: return 'none'
-- If in crisis: return exactly one label from:
-  catastrophizing, black-and-white thinking, mind-reading, should-statements,
-  emotional reasoning, overgeneralization, mental filtering, personalization
+- Analyze the user's message and decide if they are in severe mental health crisis with a cognitive distortion
+- Set distortion=true if they are in crisis with a cognitive distortion
+- Set label to one of: catastrophizing | black-and-white thinking | mind-reading | should-statements |
+  emotional reasoning | overgeneralization | mental filtering
+- If not in crisis: set distortion=false and label=none
+
+- OUTPUT: Return ONLY raw JSON (no markdown): {{\"distortion\": true|false, \"label\": \"catastrophizing | black-and-white thinking | mind-reading | should-statements |
+  emotional reasoning | overgeneralization | mental filtering\"}}
 """
 
 COUNSELING_SYSTEM_PROMPT = """

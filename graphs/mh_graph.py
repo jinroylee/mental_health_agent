@@ -172,9 +172,13 @@ def session_initializer_node(state: ChatState) -> ChatState:
 #classify if this is a feedback or not. If feedback, collect feedback. If not, continue with the conversation.
 def classify_feedback_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("classify_feedback_node")
-    feedback_type = classify_feedback_chain.invoke({"input": state["last_user_msg"]})
-    pretty_logger.state_print("feedback_type", feedback_type)
-    state.update(is_feedback=feedback_type == "feedback")
+    history = state.get("chat_history", [])
+    inputs = {"input": state["last_user_msg"]}
+    if len(history) > 1:
+        last_ai_message = history[-2]
+        inputs["history"] = [last_ai_message]
+    feedback_output = classify_feedback_chain.invoke(inputs)
+    state.update(is_feedback=feedback_output.get("is_feedback", False))
     pretty_logger.node_separator_bottom("classify_feedback_node")
     return state
 
@@ -189,6 +193,7 @@ def diagnose_node(state: ChatState) -> ChatState:
             "input": user_msg
         })
         pretty_logger.state_print("data", data)
+
         needs_therapy = bool(data.get("needs_therapy", False))
         diagnosis: Diagnosis = data.get("diagnosis", "none")  # type: ignore[assignment]
     except (json.JSONDecodeError, Exception) as e:
@@ -225,23 +230,16 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_bottom("counseling_dialogue_node")
     return state
 
-def nlp_parse_node(state: ChatState) -> ChatState: 
-    """In a production system you would use spaCy / Transformers here.
-
-    For this skeleton we simply pass through.
-    """
-    pretty_logger.node_separator_top("nlp_parse_node")
-    pretty_logger.state_print("state", state)
-    pretty_logger.node_separator_bottom("nlp_parse_node")
-    return {}
-
 def distortion_detector_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("distortion_detector_node")
     pretty_logger.state_print("last_user_msg", state["last_user_msg"])
     
-    label = distortion_chain.invoke({"message": state['last_user_msg']}).strip().lower()
+    detection_output = distortion_chain.invoke({"message": state['last_user_msg']})
+    if detection_output.get("distortion") and detection_output.get("label"):
+        label = detection_output.get("label")
+    else:
+        label = None
     pretty_logger.state_print("label", label)
-    label = None if label == "none" else label
     pretty_logger.node_separator_bottom("distortion_detector_node")
     return {"detected_distortion": label}
 
@@ -265,6 +263,7 @@ def reframe_prompt_node(state: ChatState) -> ChatState:
     reply = reframe_chain.invoke({
         "tmpl": template,
         "prior_summary": state.get("prior_summary", ""),
+        "history": state.get("chat_history", []),
         "u": state["last_user_msg"],
     })
     pretty_logger.state_print("reply", reply)
@@ -296,6 +295,7 @@ def guide_exercise_node(state: ChatState) -> ChatState:
     reply = guide_exercise_chain.invoke({
         "script": script,
         "prior_summary": state.get("prior_summary", ""),
+        "history": state.get("chat_history", []),
         "u": state["last_user_msg"],
     })
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
@@ -319,7 +319,7 @@ def collect_feedback_node(state: ChatState) -> ChatState:
 def adjust_instruction_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("adjust_instruction_node")
 
-    reply = adjust_instruction_chain.invoke({"u": state["last_user_msg"]})
+    reply = adjust_instruction_chain.invoke({"u": state["last_user_msg"], "prior_summary": state.get("prior_summary", ""), "history": state.get("chat_history", [])})
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
     pretty_logger.node_separator_bottom("adjust_instruction_node")
@@ -396,7 +396,7 @@ def summary_writer_node(state: ChatState) -> ChatState:
             "doc_type": "session_summary",
         }
     )
-    mmr_retriever.vectorstore.add_documents([doc])
+    base_retriever.vectorstore.add_documents([doc])
     pretty_logger.info("Updated session summary stored. Length: %d chars", len(new_summary))
     pretty_logger.node_separator_bottom("summary_writer_node")
     # Return full state so chat_history/prior_summary changes are captured
@@ -435,7 +435,6 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_node("classify_feedback", classify_feedback_node)
     sg.add_node("diagnose", diagnose_node)
     sg.add_node("counseling_dialogue", counseling_dialogue_node)
-    sg.add_node("nlp_parse", nlp_parse_node)
     sg.add_node("distortion_detector", distortion_detector_node)
     sg.add_node("reframe_prompt", reframe_prompt_node)
     sg.add_node("therapy_planner", therapy_planner_node)
@@ -467,33 +466,32 @@ def build_graph() -> StateGraph[ChatState]:
         is_feedback,
         {
             True: "collect_feedback",
-            False: "diagnose",
+            False: "distortion_detector",
         },
     )
 
     sg.add_conditional_edges(
-        "diagnose",
-        needs_therapy_script,
+        "distortion_detector",
+        has_distortion,
         {
-            True: "nlp_parse",
-            False: "counseling_dialogue",
+            True: "reframe_prompt",
+            False: "diagnose",
         },
     )
 
     sg.add_edge("counseling_dialogue", "summary_writer")
 
-    sg.add_edge("nlp_parse", "distortion_detector")
-
     sg.add_conditional_edges(
-        "distortion_detector",
-         has_distortion,
+        "diagnose",
+        needs_therapy_script,
         {
-            False: "therapy_planner",
-            True: "reframe_prompt",
+            True: "therapy_planner",
+            False: "counseling_dialogue",
         },
     )
 
-    sg.add_edge("reframe_prompt", "therapy_planner")
+    sg.add_edge("reframe_prompt", "summary_writer")
+
     sg.add_edge("therapy_planner", "guide_exercise")
 
     sg.add_conditional_edges(
