@@ -58,10 +58,12 @@ def rrf_fuse(results: List[List[Document]], k=60, C=60) -> List[Document]:
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (C + rank)
     # sort by fused score
     fused = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    logger.info(f"Sorted fused: {fused}")
     return [by_id[_id] for _id, _ in fused]
 
 def retrieve_with_rewrites(retriever, user_message: str, filters: Optional[dict] = None) -> List[Document]:
     queries = rewrite_queries(user_message)
+    logger.info(f"Rewritten queries: {queries}")
     runs = []
     for q in queries:
         # Use MMR retriever for better diversity
@@ -70,14 +72,17 @@ def retrieve_with_rewrites(retriever, user_message: str, filters: Optional[dict]
     fused = rrf_fuse(runs, k=30, C=60)
     return fused
 
-def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] = None, top_k: int = 5, similarity_threshold: float = 0.25) -> List[Document]:
+def top_k_for_generation(retriever, user_message: str, filters: Optional[dict] = None, top_k: int = 5, similarity_threshold: float = 0.25, use_rewrites: bool = True) -> List[Document]:
     """
     Retrieve top-k documents with improved similarity filtering.
     
     Args:
         similarity_threshold: Minimum cosine similarity score (default 0.3, lowered from 0.5)
     """
-    fused = retrieve_with_rewrites(retriever, user_message, filters)
+    if use_rewrites:
+        fused = retrieve_with_rewrites(retriever, user_message, filters)
+    else:
+        fused = retriever.invoke(user_message, filter=filters)
     if not fused:
         return []
 
@@ -169,6 +174,7 @@ def retrieve_crisis_resource(retriever, locale: str) -> str:
             filters={"doc_type": "crisis_resource"},
             top_k=2,  # Get 2 for redundancy
             similarity_threshold=0.25,  # Lowered threshold for crisis resources (was 0.4)
+            use_rewrites=False,
         )
         
         if docs:
@@ -194,6 +200,7 @@ def retrieve_reframe_template(retriever, distortion_label: str) -> str:
         filters={"doc_type": "reframe_template"},
         top_k=2,  # Get 2 templates for variety
         similarity_threshold=0.3,  # Lowered threshold (was 0.45)
+        use_rewrites=False,
     )
     
     if docs:

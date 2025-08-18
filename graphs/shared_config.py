@@ -14,7 +14,7 @@ dotenv.load_dotenv(PROJECT_ROOT / ".env")
 
 # Model configurations
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 # Shared LLM instance
 llm = ChatOllama(

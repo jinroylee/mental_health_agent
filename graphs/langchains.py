@@ -1,7 +1,6 @@
 """
 Langchain definitions for the mental health assistant.
 """
-import os
 import logging
 from pathlib import Path
 import dotenv
@@ -9,7 +8,16 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.prompts.chat import ChatPromptValue
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from graphs.pretty_logging import get_pretty_logger
-from graphs.prompts import *
+from graphs.prompts import (
+    FEEDBACK_CLASSIFICATION_SYSTEM_PROMPT,
+    DIAGNOSIS_SYSTEM_PROMPT,
+    DISTORTION_SYSTEM_PROMPT,
+    CRISIS_SYSTEM_PROMPT,
+    ADAPTIVE_COUNSELING_PROMPT,
+    REFRAME_SYSTEM_PROMPT,
+    GUIDE_EXERCISE_SYSTEM_PROMPT,
+    ADJUST_INSTRUCTION_SYSTEM_PROMPT,
+)
 from graphs.shared_config import llm
 
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +50,7 @@ def log_llm_output(output):
 
 # Mood detection chain
 mood_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Return one word: happy, sad, anxious, angry, neutral, or stressed."),
+    ("system", "Output exactly one of: happy|sad|anxious|angry|neutral|stressed"),
     ("user", "{text}"),
 ])
 mood_chain = mood_prompt | llm | StrOutputParser()
@@ -72,7 +80,7 @@ distortion_chain = distortion_prompt | llm | StrOutputParser()
 
 # Sentiment analysis chain
 sentiment_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Classify the sentiment of the feedback as positive, neutral, or negative."),
+    ("system", "Output exactly one of: positive|neutral|negative"),
     ("user", "{feedback}"),
 ])
 sentiment_chain = sentiment_prompt | llm | StrOutputParser()
@@ -83,7 +91,7 @@ crisis_prompt = ChatPromptTemplate.from_messages([
     ("system", "=== CRISIS RESOURCES ===\n{resources}\n=== END CRISIS RESOURCES ==="),
     ("user", "{user_message}"),
 ])
-crisis_chain = crisis_prompt | llm | StrOutputParser()
+crisis_chain = crisis_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
 # Counseling dialogue chain - completely revamped with specialized prompt
 counseling_prompt = ChatPromptTemplate.from_messages([
@@ -111,18 +119,18 @@ guide_exercise_prompt = ChatPromptTemplate.from_messages([
     ("system", "=== THERAPEUTIC EXERCISE SCRIPT ===\n{script}\n=== END SCRIPT ===\n\nUse the above script to guide the user through this therapeutic exercise."),
     ("user", "User said: {u}\n\nPlease provide therapy instructions based on the script above."),
 ])
-guide_exercise_chain = guide_exercise_prompt | llm | StrOutputParser()
+guide_exercise_chain = guide_exercise_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
 # Adjust instruction chain - updated with specialized prompt
 adjust_instruction_prompt = ChatPromptTemplate.from_messages([
     ("system", ADJUST_INSTRUCTION_SYSTEM_PROMPT),
     ("user", "User feedback about the previous exercise: {u}\n\nPlease adjust the therapeutic approach based on this feedback."),
 ])
-adjust_instruction_chain = adjust_instruction_prompt | llm | StrOutputParser()
+adjust_instruction_chain = adjust_instruction_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
 # Summary generation chain
 summary_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Summarise the key points and progress of the following conversation in 3 sentences."),
+    ("system", "Summarize the conversation in exactly 3 concise sentences. No bullets, headings, or preamble."),
     ("system", "{conv}"),
 ])
 summary_chain = summary_prompt | llm | StrOutputParser()

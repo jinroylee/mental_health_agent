@@ -22,10 +22,10 @@ DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP = 1200, 150
 
 # Chunk sizes per subdirectory - you can customize these
 CHUNK_SIZES = {
-    "counseling_resource": {"chunk_size": 1200, "overlap": 150},
-    "crisis_resource": {"chunk_size": 1200, "overlap": 150},      # Smaller chunks for crisis info
-    "reframe_template": {"chunk_size": 1200, "overlap": 150},     # Smaller for templates
-    "therapy_resource": {"chunk_size": 1500, "overlap": 200},    # Larger for comprehensive therapy docs
+    "counseling_resource": {"chunk_size": 1500, "overlap": 250},
+    "crisis_resource": {"chunk_size": 1500, "overlap": 250},      # Smaller chunks for crisis info
+    "reframe_template": {"chunk_size": 1500, "overlap": 250},     # Smaller for templates
+    "therapy_resource": {"chunk_size": 2000, "overlap": 300},    # Larger for comprehensive therapy docs
 }
 
 INDEX_NAME = os.environ.get("INDEX_NAME")
