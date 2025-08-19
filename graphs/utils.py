@@ -23,7 +23,19 @@ parser = CommaSeparatedListOutputParser()
 # Helper utilities
 # ---------------------------------------------------------------------------
 def _similarity_search(retriever, query: str, *, filters: Optional[dict] = None, k: int = 3):
-    return retriever.vectorstore.similarity_search(query=query, k=k, filter=filters or {})
+    """Run a similarity search using a generic retriever interface.
+
+    Works with plain retrievers and compression retrievers by preferring the
+    Runnable-style ``invoke`` API (which many LC retrievers support), and
+    gracefully falling back to ``get_relevant_documents``.
+    """
+    try:
+        # Many retrievers in LC support passing filters via invoke
+        docs = retriever.invoke(query, filter=filters)
+    except Exception:
+        # Fallback to basic retriever interface without filters
+        docs = retriever.get_relevant_documents(query)
+    return docs[:k] if k and isinstance(docs, list) else docs
 
 def rewrite_queries(user_message: str) -> List[str]:
     text = user_message.strip()
@@ -172,7 +184,7 @@ def retrieve_crisis_resource(retriever, locale: str) -> str:
             retriever,
             user_message=f"{locale} suicide prevention crisis hotline",
             filters={"doc_type": "crisis_resource"},
-            top_k=2,  # Get 2 for redundancy
+            top_k=1,  # Get 2 for redundancy
             similarity_threshold=0.25,  # Lowered threshold for crisis resources (was 0.4)
             use_rewrites=False,
         )
@@ -198,7 +210,7 @@ def retrieve_reframe_template(retriever, distortion_label: str) -> str:
         retriever,
         user_message=f"Socratic questions cognitive behavioral therapy {distortion_label} reframe",
         filters={"doc_type": "reframe_template"},
-        top_k=2,  # Get 2 templates for variety
+        top_k=1,  # Get 2 templates for variety
         similarity_threshold=0.3,  # Lowered threshold (was 0.45)
         use_rewrites=False,
     )
@@ -221,7 +233,7 @@ def retrieve_counseling_resource(retriever, query: str) -> str:
         retriever,
         user_message=query,  # Use the original query instead of prefixing
         filters={"doc_type": "counseling_resource"},
-        top_k=3,  # Get 3 resources for comprehensive context
+        top_k=2,  # Get 3 resources for comprehensive context
         similarity_threshold=0.3,  # Lowered threshold (was 0.5)
     )
     
@@ -243,7 +255,7 @@ def retrieve_therapy_script(retriever, query: str) -> str:
         retriever,
         user_message=f"therapy exercise intervention {query}",
         filters={"doc_type": "therapy_resource"},
-        top_k=3,  # Get multiple scripts for comprehensive approach
+        top_k=2,  # Get multiple scripts for comprehensive approach
         similarity_threshold=0.3,  # Lowered threshold (was 0.45)
     )
     

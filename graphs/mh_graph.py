@@ -99,7 +99,6 @@ def detect_emotion_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("detect_emotion_node")
     user_msg = state["last_user_msg"]# Add user message to chat history
     
-    state["chat_history"].append(HumanMessage(content=user_msg))
     mod_res = openai_client.moderations.create(model="text-moderation-latest", input=user_msg).model_dump()["results"][0]
     state["risk_level"] = "crisis" if mod_res["flagged"] and mod_res["categories"].get("self_harm", False) else "safe"
     
@@ -128,6 +127,7 @@ def crisis_path_node(state: ChatState) -> ChatState:
         "user_message": user_msg
     })
 
+    state.setdefault("chat_history",[]).append(HumanMessage(content=user_msg))
     state.setdefault("chat_history", []).append(AIMessage(content=assistant_response))
     pretty_logger.node_separator_bottom("crisis_path_node")
     return state
@@ -154,6 +154,8 @@ def session_initializer_node(state: ChatState) -> ChatState:
     if docs:
         sorted_docs = sorted(docs, key=lambda d: int(d.metadata.get("timestamp", "0")), reverse=True)
         summary = sorted_docs[0].page_content
+        recent_diagnosis = sorted_docs[0].metadata.get("recent_diagnosis", "none")
+        state.update(diagnosis=recent_diagnosis)
         pretty_logger.state_print("selected_latest_summary", summary)
     else:
         summary = ""
@@ -174,11 +176,13 @@ def classify_feedback_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("classify_feedback_node")
     history = state.get("chat_history", [])
     inputs = {"input": state["last_user_msg"]}
-    if len(history) > 1:
-        last_ai_message = history[-2]
+    if len(history) > 0:
+        last_ai_message = history[-1]
         inputs["history"] = [last_ai_message]
-    feedback_output = classify_feedback_chain.invoke(inputs)
-    state.update(is_feedback=feedback_output.get("is_feedback", False))
+        feedback_output = classify_feedback_chain.invoke(inputs)
+        state.update(is_feedback=feedback_output.get("is_feedback", False))
+    else:
+        state.update(is_feedback=False)
     pretty_logger.node_separator_bottom("classify_feedback_node")
     return state
 
@@ -225,6 +229,8 @@ def counseling_dialogue_node(state: ChatState) -> ChatState:
         "history": state.get("chat_history", []),
     })
     pretty_logger.state_print("answer", answer)
+
+    state.setdefault("chat_history",[]).append(HumanMessage(content=state.get("last_user_msg")))
     state.setdefault("chat_history", []).append(AIMessage(content=answer))
     pretty_logger.state_print("chat_history", state["chat_history"])
     pretty_logger.node_separator_bottom("counseling_dialogue_node")
@@ -267,11 +273,12 @@ def reframe_prompt_node(state: ChatState) -> ChatState:
         "u": state["last_user_msg"],
     })
     pretty_logger.state_print("reply", reply)
+    state.setdefault("chat_history",[]).append(HumanMessage(content=state.get("last_user_msg")))
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.node_separator_bottom("reframe_prompt_node")
     return state
 
-def therapy_planner_node(state: ChatState) -> ChatState:
+def therapy_planner_node1(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("therapy_planner_node")
     diagnosis: Diagnosis = state.get("diagnosis", "none")
     
@@ -288,7 +295,6 @@ def therapy_planner_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_bottom("therapy_planner_node")
     return state
 
-
 def guide_exercise_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("guide_exercise_node")
     script = state.get("therapy_script", "Let's begin a breathing exercise…")
@@ -298,6 +304,7 @@ def guide_exercise_node(state: ChatState) -> ChatState:
         "history": state.get("chat_history", []),
         "u": state["last_user_msg"],
     })
+    state.setdefault("chat_history",[]).append(HumanMessage(content=state.get("last_user_msg")))
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
     state["therapy_attempts"] = state.get("therapy_attempts", 0) + 1  # type: ignore[index]
@@ -311,20 +318,58 @@ def collect_feedback_node(state: ChatState) -> ChatState:
     pretty_logger.state_print("user_msg", user_msg)
     sentiment_raw = sentiment_chain.invoke({"feedback": user_msg}).strip().lower()
     sentiment = sentiment_raw if sentiment_raw in {"positive", "neutral", "negative"} else "neutral"
+    pretty_logger.state_print("sentiment", sentiment)
     state.update(feedback_sentiment=sentiment)  # type: ignore[arg-type]
     pretty_logger.node_separator_bottom("collect_feedback_node")
     return state
 
+def wrap_up_node(state: ChatState) -> ChatState:
+    pretty_logger.node_separator_top("wrap_up_node")
+    pretty_logger.state_print("last_user_msg", state["last_user_msg"])
+
+    reply = wrap_up_chain.invoke({
+        "u": state["last_user_msg"],
+        "history": state.get("chat_history", []),
+    })
+    state.setdefault("chat_history",[]).append(HumanMessage(content=state.get("last_user_msg")))
+    state.setdefault("chat_history", []).append(AIMessage(content=reply))
+    pretty_logger.state_print("Chat history", state["chat_history"])
+    pretty_logger.node_separator_bottom("wrap_up_node")
+    return state
+
+def therapy_planner_node2(state: ChatState) -> ChatState:
+    pretty_logger.node_separator_top("therapy_planner_node")
+    diagnosis: Diagnosis = state.get("diagnosis", "none")
+    
+    # Use diagnosis for more targeted therapy script retrieval
+    query = f"{diagnosis} coping strategies" if diagnosis != "none" else "general mental health coping"
+    therapy_script = retrieve_therapy_script(mmr_retriever, query)
+    
+    # Check if we have specific therapy scripts or are using fallback
+    has_specific_script = "No specific therapy scripts found" not in therapy_script
+    pretty_logger.state_print("has_specific_script", has_specific_script)
+    pretty_logger.state_print("therapy_script", therapy_script)
+    
+    state.update(therapy_script=therapy_script, therapy_attempts=0)
+    pretty_logger.node_separator_bottom("therapy_planner_node")
+    return state
 
 def adjust_instruction_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("adjust_instruction_node")
+    script = state.get("therapy_script", "Let's begin a breathing exercise…")
 
-    reply = adjust_instruction_chain.invoke({"u": state["last_user_msg"], "prior_summary": state.get("prior_summary", ""), "history": state.get("chat_history", [])})
+    inputs = {
+        "u": state["last_user_msg"],
+        "script": script,
+        "history": state.get("chat_history", []),
+    }
+    reply = adjust_instruction_chain.invoke(inputs)
+    
+    state.setdefault("chat_history",[]).append(HumanMessage(content=state.get("last_user_msg")))
     state.setdefault("chat_history", []).append(AIMessage(content=reply))
     pretty_logger.state_print("Chat history", state["chat_history"])
     pretty_logger.node_separator_bottom("adjust_instruction_node")
     return state
-
 
 def summary_writer_node(state: ChatState) -> ChatState:
     pretty_logger.node_separator_top("summary_writer_node")
@@ -339,9 +384,8 @@ def summary_writer_node(state: ChatState) -> ChatState:
 
     # If we are within the window, skip summarization to save tokens
     if window_size <= 0 or len(history) <= window_size:
-        pretty_logger.info("History within window (len=%d, window=%d); skipping summary update.", len(history), window_size)
+        pretty_logger.info("History within window (len=%d, window=%d); no summary update.", len(history), window_size)
         pretty_logger.node_separator_bottom("summary_writer_node")
-        return {}
 
     # Fold only the oldest message into the rolling summary each turn
     oldest_messages = history[:len(history) - window_size]
@@ -365,16 +409,18 @@ def summary_writer_node(state: ChatState) -> ChatState:
     # Persist the updated rolling summary (keep one per user)
     try:
         existing_docs = _similarity_search(
-            mmr_retriever,
+            similarity_retriever,
             query="session summary",
             filters={"user_id": user_id, "doc_type": "session_summary"},
             k=10,
         )
+        pretty_logger.state_print("existing_docs", existing_docs)
         if existing_docs:
             vector_ids = []
             for doc in existing_docs:
                 if hasattr(doc, 'id') and doc.id:
                     vector_ids.append(doc.id)
+            pretty_logger.state_print("vector_ids", vector_ids)
             if vector_ids:
                 index.delete(ids=vector_ids)
                 pretty_logger.info("Deleted %d existing session summaries for user %s", len(vector_ids), user_id)
@@ -391,12 +437,14 @@ def summary_writer_node(state: ChatState) -> ChatState:
         page_content=new_summary,
         metadata={
             "user_id": user_id,
+            "recent_diagnosis": state.get("diagnosis", "none"),
             "thread_id": state.get("thread_id", ""),
             "timestamp": str(int(time.time())),
             "doc_type": "session_summary",
         }
     )
-    base_retriever.vectorstore.add_documents([doc])
+    # Add the updated summary to the vector store directly
+    PineconeVectorStore(index=index, embedding=embed).add_documents([doc])
     pretty_logger.info("Updated session summary stored. Length: %d chars", len(new_summary))
     pretty_logger.node_separator_bottom("summary_writer_node")
     # Return full state so chat_history/prior_summary changes are captured
@@ -437,9 +485,11 @@ def build_graph() -> StateGraph[ChatState]:
     sg.add_node("counseling_dialogue", counseling_dialogue_node)
     sg.add_node("distortion_detector", distortion_detector_node)
     sg.add_node("reframe_prompt", reframe_prompt_node)
-    sg.add_node("therapy_planner", therapy_planner_node)
+    sg.add_node("therapy_planner1", therapy_planner_node1)
     sg.add_node("guide_exercise", guide_exercise_node)
     sg.add_node("collect_feedback", collect_feedback_node)
+    sg.add_node("wrap_up", wrap_up_node)
+    sg.add_node("therapy_planner2", therapy_planner_node2)
     sg.add_node("adjust_instruction", adjust_instruction_node)
     sg.add_node("summary_writer", summary_writer_node)
 
@@ -485,24 +535,26 @@ def build_graph() -> StateGraph[ChatState]:
         "diagnose",
         needs_therapy_script,
         {
-            True: "therapy_planner",
+            True: "therapy_planner1",
             False: "counseling_dialogue",
         },
     )
 
     sg.add_edge("reframe_prompt", "summary_writer")
 
-    sg.add_edge("therapy_planner", "guide_exercise")
+    sg.add_edge("therapy_planner1", "guide_exercise")
 
     sg.add_conditional_edges(
         "collect_feedback",
         needs_adjust,
         {
-            True : "adjust_instruction",
-            False : "summary_writer",
+            True : "therapy_planner2",
+            False : "wrap_up",
         },
     )
+    sg.add_edge("wrap_up", "summary_writer")
 
+    sg.add_edge("therapy_planner2", "adjust_instruction")
     sg.add_edge("adjust_instruction", "summary_writer")
 
     sg.add_edge("guide_exercise", "summary_writer")        # stop after giving the exercise

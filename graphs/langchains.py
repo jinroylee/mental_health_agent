@@ -7,16 +7,19 @@ import dotenv
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.prompts.chat import ChatPromptValue
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from langchain_core.runnables import RunnableLambda
 from graphs.pretty_logging import get_pretty_logger
 from graphs.prompts import (
+    BASE_SYSTEM_PROMPT,
     FEEDBACK_CLASSIFICATION_SYSTEM_PROMPT,
     DIAGNOSIS_SYSTEM_PROMPT,
     DISTORTION_SYSTEM_PROMPT,
     CRISIS_SYSTEM_PROMPT,
-    ADAPTIVE_COUNSELING_PROMPT,
+    COUNSELING_SYSTEM_PROMPT,
     REFRAME_SYSTEM_PROMPT,
     GUIDE_EXERCISE_SYSTEM_PROMPT,
     ADJUST_INSTRUCTION_SYSTEM_PROMPT,
+    SENTIMENT_SYSTEM_PROMPT,
 )
 from graphs.shared_config import llm
 
@@ -60,7 +63,10 @@ classify_feedback_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder("history", optional=True),
     ("user", "{input}"),
 ])
-classify_feedback_chain = classify_feedback_prompt | log_llm_input | llm | log_llm_output | JsonOutputParser()
+_feedback_parser_with_fallback = JsonOutputParser().with_fallbacks([
+    RunnableLambda(lambda _: {"is_feedback": False})
+])
+classify_feedback_chain = classify_feedback_prompt | log_llm_input | llm | log_llm_output | _feedback_parser_with_fallback
 
 # Diagnosis chain with JSON output parser
 diagnosis_prompt = ChatPromptTemplate.from_messages([
@@ -69,21 +75,27 @@ diagnosis_prompt = ChatPromptTemplate.from_messages([
     ("user", "{input}"),
 ])
 
-diagnosis_chain = diagnosis_prompt | llm | JsonOutputParser()
+_diagnosis_parser_with_fallback = JsonOutputParser().with_fallbacks([
+    RunnableLambda(lambda _: {"needs_therapy": False, "diagnosis": "none"})
+])
+diagnosis_chain = diagnosis_prompt | llm | _diagnosis_parser_with_fallback
 
 # Distortion detection chain
 distortion_prompt = ChatPromptTemplate.from_messages([
     ("system", DISTORTION_SYSTEM_PROMPT),
     ("human", "{message}"),
 ])
-distortion_chain = distortion_prompt | log_llm_input | llm | log_llm_output | JsonOutputParser()
+_distortion_parser_with_fallback = JsonOutputParser().with_fallbacks([
+    RunnableLambda(lambda _: {"distortion": False, "label": "none"})
+])
+distortion_chain = distortion_prompt | log_llm_input | llm | log_llm_output | _distortion_parser_with_fallback
 
 # Sentiment analysis chain
 sentiment_prompt = ChatPromptTemplate.from_messages([
-    ("system", "Output exactly one of: positive|neutral|negative"),
+    ("system", SENTIMENT_SYSTEM_PROMPT),
     ("user", "{feedback}"),
 ])
-sentiment_chain = sentiment_prompt | llm | StrOutputParser()
+sentiment_chain = sentiment_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
 # Crisis response chain - enhanced with better context formatting
 crisis_prompt = ChatPromptTemplate.from_messages([
@@ -95,8 +107,8 @@ crisis_chain = crisis_prompt | log_llm_input | llm | log_llm_output | StrOutputP
 
 # Counseling dialogue chain - completely revamped with specialized prompt
 counseling_prompt = ChatPromptTemplate.from_messages([
-    ("system", ADAPTIVE_COUNSELING_PROMPT),
-    ("system", "=== RETRIEVED COUNSELING KNOWLEDGE ===\n{ctx}\n=== END RETRIEVED KNOWLEDGE ===\n\nUse the above knowledge as your primary reference for responding to the user's question."),
+    ("system", COUNSELING_SYSTEM_PROMPT),
+    ("system", "=== RETRIEVED COUNSELING KNOWLEDGE ===\n{ctx}\n=== END RETRIEVED KNOWLEDGE ===\n"),
     ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     MessagesPlaceholder("history"),
     ("user", "{question}"),
@@ -106,7 +118,7 @@ counseling_chain = counseling_prompt | log_llm_input | llm | log_llm_output | St
 # Reframe response chain - updated with specialized prompt
 reframe_prompt = ChatPromptTemplate.from_messages([
     ("system", REFRAME_SYSTEM_PROMPT),
-    ("system", "=== SOCRATIC QUESTIONING TEMPLATE ===\n{tmpl}\n=== END TEMPLATE ===\n\nUse the above template to guide your Socratic questioning approach."),
+    ("system", "=== SOCRATIC QUESTIONING TEMPLATE ===\n{tmpl}\n=== END TEMPLATE ===\n"),
     ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     MessagesPlaceholder("history"),
     ("user", "User said: {u}\n\nPlease respond using Socratic coaching techniques to help them explore their thoughts."),
@@ -116,19 +128,26 @@ reframe_chain = reframe_prompt | log_llm_input | llm | log_llm_output | StrOutpu
 # Guide exercise chain - updated with specialized prompt
 guide_exercise_prompt = ChatPromptTemplate.from_messages([
     ("system", GUIDE_EXERCISE_SYSTEM_PROMPT),
-    ("system", "=== THERAPEUTIC EXERCISE SCRIPT ===\n{script}\n=== END SCRIPT ===\n\nUse the above script to guide the user through this therapeutic exercise."),
+    ("system", "=== THERAPEUTIC EXERCISE SCRIPT ===\n{script}\n=== END SCRIPT ===\n"),
     ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
     MessagesPlaceholder("history"),
     ("user", "User said: {u}\n\nPlease provide therapy instructions based on the script above."),
 ])
 guide_exercise_chain = guide_exercise_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 
+wrap_up_prompt = ChatPromptTemplate.from_messages([
+    ("system", BASE_SYSTEM_PROMPT),
+    MessagesPlaceholder("history"),
+    ("user", "{u}"),
+])
+wrap_up_chain = wrap_up_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
+
 # Adjust instruction chain - updated with specialized prompt
 adjust_instruction_prompt = ChatPromptTemplate.from_messages([
     ("system", ADJUST_INSTRUCTION_SYSTEM_PROMPT),
-    ("system", "=== SESSION CONTEXT ===\nPrior conversation summary: {prior_summary}\n=== END SESSION CONTEXT ==="),
+    ("system", "=== THERAPEUTIC EXERCISE SCRIPT ===\n{script}\n=== END SCRIPT ===\n"),
     MessagesPlaceholder("history"),
-    ("user", "User feedback about the previous exercise: {u}\n\nPlease adjust the therapeutic approach based on this feedback."),
+    ("user", "{u}"),
 ])
 adjust_instruction_chain = adjust_instruction_prompt | log_llm_input | llm | log_llm_output | StrOutputParser()
 

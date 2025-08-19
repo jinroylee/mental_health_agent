@@ -61,7 +61,7 @@ with st.sidebar:
         st.session_state["messages"] = []
         st.success("Started a new chat session.")
 
-st.title("🧘 Mental-Health Support Chat")
+# st.title("🧘 Mental-Health Support Chat")
 st.markdown(
     """
     *I'm an AI assistant and **not** a licensed clinician.*
