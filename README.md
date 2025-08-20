@@ -3,11 +3,15 @@ Todo:
 - 쓰레숄드 좀만 낮추자, 너무 안나온다
 - runnablelambda
 
-Historues:
-- awaiting_feedback 만 보고 결정하던 로직 => feedback 을 분류하는 노드 추가 => 했음~
-- MMR 로 query, instead of similarity search => 비슷한 서적이 많다보니
-- Summarizing logic 5개까지만 window 에 저장
+Problem solve history:
+- awaiting_feedback 만 보고 결정하던 로직 => therapy 를 내고나면 무조건 피드백을 원함 => feedback loop, simple counseling 사이 자유로운 switch off 안댐 => feedback 을 분류하는 노드 추가 => 했음~  (문제해결)
 - custom parser for json inputs
+- fuse 한거?
+- 로거
+
+Details
+- MMR 로 query, instead of similarity search => 비슷한 서적이 많다보니 
+- Summarizing logic 5개까지만 window 에 저장
 
 Limitation:
 - diagnoise 가 아쉬움
